@@ -1,11 +1,13 @@
 """Postgres store tests: fixture-driven behavior units plus frozen-snapshot round-trip integration.
 
 These tests require the local pgvector database from compose.yaml: `docker compose up -d`.
-Each test starts from a dropped schema, so they reset the shared development database.
+The suite creates and removes a dedicated test database so development data is untouched.
 """
 
 import csv
+import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
@@ -72,13 +74,38 @@ def public_tables(connection):
     return {name for (name,) in rows}
 
 
-@pytest.fixture()
-def conn():
+def _database_named(url, name):
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, f"/{name}", parts.query, parts.fragment))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_test_database():
+    admin_url = database_url()
+    test_url = _database_named(admin_url, "rec_test")
     try:
-        with psycopg.connect(database_url(), autocommit=True, connect_timeout=5) as admin:
-            admin.execute("DROP TABLE IF EXISTS " + ", ".join(sorted(TABLES)) + " CASCADE")
+        with psycopg.connect(admin_url, autocommit=True, connect_timeout=5) as admin:
+            admin.execute("DROP DATABASE IF EXISTS rec_test WITH (FORCE)")
+            admin.execute("CREATE DATABASE rec_test")
     except psycopg.OperationalError as error:
-        pytest.fail(f"PostgreSQL unavailable at {database_url()}; run `docker compose up -d` ({error})")
+        pytest.fail(f"PostgreSQL unavailable at {admin_url}; run `docker compose up -d` ({error})")
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = test_url
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+        with psycopg.connect(admin_url, autocommit=True, connect_timeout=5) as admin:
+            admin.execute("DROP DATABASE IF EXISTS rec_test WITH (FORCE)")
+
+
+@pytest.fixture()
+def conn(isolated_test_database):
+    with psycopg.connect(database_url(), autocommit=True, connect_timeout=5) as admin:
+        admin.execute("DROP TABLE IF EXISTS " + ", ".join(sorted(TABLES)) + " CASCADE")
     connection = connect()
     yield connection
     connection.close()
