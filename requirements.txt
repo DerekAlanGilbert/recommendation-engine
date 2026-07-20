@@ -1,8 +1,6 @@
-torch
-numpy
-pytest
-psycopg[binary]
-pgvector
-fastapi
-uvicorn
-httpx
+torch==2.13.0
+numpy==2.5.1
+psycopg[binary]==3.3.4
+pgvector==0.5.0
+fastapi==0.139.2
+uvicorn==0.51.0

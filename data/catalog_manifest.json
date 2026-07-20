@@ -3,7 +3,7 @@
   "retrieved_date": "2026-07-19",
   "source_sha256": "e2e39dc0bb58b2feb70aa393d60b3a05ade47c005a6e6611491949bdab620fc4",
   "source_row_count": 49995,
-  "transformation_version": "1",
+  "transformation_version": "2",
   "model_year_min": 2017,
   "model_year_max": 2026,
   "brands": [
@@ -28,8 +28,10 @@
     "Audi",
     "Acura"
   ],
-  "grouping": "(year, make, baseModel), falling back to whitespace-normalized model when baseModel is absent",
-  "variant_count": 9134,
-  "canonical_count": 2138,
+  "consumer_variant_grouping": "(year, make, model) over the whitespace-normalized EPA model string; each variant carries a deterministic primary family (modal baseModel of its configs, ties broken lexicographically)",
+  "family_grouping": "(year, make, baseModel), falling back to whitespace-normalized model when baseModel is absent",
+  "config_count": 9134,
+  "consumer_variant_count": 6606,
+  "family_count": 2138,
   "snapshot_sha256": "51b7d5cd6d527e43da249a37be75af0cd822ae728d1918b90d43843420487846"
 }

@@ -1,8 +1,15 @@
-"""Single-profile FastAPI service: reset, recommendations, feedback, health.
+"""Single-profile FastAPI service: reset, probe, recommendations, feedback, health.
 
-Every canonical item is scored exactly in process memory. Feedback in
-PostgreSQL is the authoritative profile state: the in-memory profile vector is
-refit from the complete persisted history at startup and after every event.
+Two distinct read surfaces serve the one active profile:
+
+- GET /probe: the next package to show for feedback — active preference
+  elicitation by expected information gain with a plausibility term.
+- GET /recommendations: the current best-fit ranking — exploitation of the
+  posterior over ideal-variant hypotheses, with family-aware diversity.
+
+Feedback in PostgreSQL is the authoritative preference state: the in-memory
+posterior is replayed from the complete persisted history at startup and after
+every event. Every variant hypothesis is scored exactly in process memory.
 """
 
 import threading
@@ -15,12 +22,13 @@ from pydantic import BaseModel, StrictBool, StrictStr
 
 from app import store
 from app.data import load_manifest, load_snapshot
-from app.model import (
-    build_item_features,
-    cold_start_profile,
-    pretrain,
-    rank_items,
-    refit_profile,
+from app.model import pretrain
+from app.preference import (
+    build_engine,
+    posterior_from_feedback,
+    rank_recommendations,
+    select_probe,
+    similarity_between,
 )
 
 # Heuristic evidence measure n / (n + EVIDENCE_PRIOR), not calibrated probability.
@@ -31,7 +39,7 @@ CONNECT_DELAY_SECONDS = 1.0
 
 
 class FeedbackRequest(BaseModel):
-    item_id: StrictStr
+    variant_id: StrictStr
     liked: StrictBool
 
 
@@ -39,29 +47,28 @@ def evidence_strength(feedback_count):
     return feedback_count / (feedback_count + EVIDENCE_PRIOR)
 
 
-def similarity_reason(model, items, feedback, item_id):
-    """Cite the rated item by embedding similarity — similarity, not causal influence."""
+def similarity_reason(engine, variants, feedback, variant_id):
+    """Cite the rated variant by blended similarity — similarity, not causal influence."""
     if not feedback:
         return "no feedback yet"
-    candidate = model.embeddings[model.index[item_id]]
     similarity = {
-        rated_id: float(candidate @ model.embeddings[model.index[rated_id]])
+        rated_id: similarity_between(engine, variant_id, rated_id)
         for rated_id, _ in feedback
     }
     liked_ids = [rated_id for rated_id, liked in feedback if liked]
     if liked_ids:
         cited = max(liked_ids, key=lambda rated_id: (similarity[rated_id], rated_id))
-        template = "most similar to liked {label} (cosine similarity {value:.2f})"
+        template = "most similar to liked {label} (similarity {value:.2f})"
     else:
         cited = min(similarity, key=lambda rated_id: (similarity[rated_id], rated_id))
-        template = "least similar to disliked {label} (cosine similarity {value:.2f})"
-    item = items[cited]
-    label = f"{item['year']} {item['make']} {item['base_model']}"
+        template = "least similar to disliked {label} (similarity {value:.2f})"
+    variant = variants[cited]
+    label = f"{variant['year']} {variant['make']} {variant['model']}"
     return template.format(label=label, value=similarity[cited])
 
 
 class Service:
-    """Serving state for the one active profile; `lock` serializes feedback/refit/persist."""
+    """Serving state for the one active profile; `lock` serializes feedback/replay/persist."""
 
     def __init__(self, database_url, connect_attempts, connect_delay):
         self.database_url = database_url
@@ -70,22 +77,27 @@ class Service:
         self.lock = threading.Lock()
         self.conn = None
         self.model = None
-        self.items = {}
+        self.engine = None
+        self.variants = {}
+        self.family_count = 0
         self.feedback = []
-        self.profile = None
+        self.posterior = None
 
     def start(self):
         self.conn = self._connect_with_retries()
         try:
             if store.load_meta(self.conn) is None:
                 store.import_catalog(self.conn, load_snapshot(), load_manifest())
+            variant_rows = store.load_variants(self.conn)
             self.model = store.load_model(self.conn)
             if self.model is None:
-                self.model = pretrain(build_item_features(store.load_variants(self.conn)), seed=0)
+                self.model = pretrain(variant_rows, seed=0)
                 store.save_model(self.conn, self.model)
-            self.items = {item["item_id"]: item for item in store.load_items(self.conn)}
+            self.engine = build_engine(self.model, variant_rows)
+            self.variants = {variant["variant_id"]: variant for variant in variant_rows}
+            self.family_count = len(store.load_families(self.conn))
             self.feedback = store.load_feedback(self.conn)
-            self.profile = refit_profile(self.model, self.feedback)
+            self.posterior = posterior_from_feedback(self.engine, self.feedback)
         except Exception:
             self.conn.close()
             raise
@@ -119,55 +131,81 @@ def create_app(database_url=None, connect_attempts=CONNECT_ATTEMPTS,
     def reset():
         with service.lock:
             try:
-                store.clear_feedback(service.conn)
+                new_posterior = posterior_from_feedback(service.engine, [])
+                with service.conn.transaction():
+                    store.clear_feedback(service.conn)
             except psycopg.Error as error:
                 raise HTTPException(status_code=503, detail="database unavailable") from error
             service.feedback = []
-            service.profile = cold_start_profile()
+            service.posterior = new_posterior
         return {"feedback_count": 0, "evidence_strength": 0.0}
+
+    @app.get("/probe")
+    def probe():
+        with service.lock:
+            choice = select_probe(service.engine, service.posterior, service.feedback)
+            if choice is None:
+                raise HTTPException(status_code=404, detail="no unrated variants remain")
+            return {
+                **service.variants[choice["variant_id"]],
+                "expected_information_gain": choice["expected_information_gain"],
+                "expected_approval": choice["expected_approval"],
+                "exploration_weight": choice["exploration_weight"],
+                "evidence_strength": evidence_strength(len(service.feedback)),
+                "reason": similarity_reason(
+                    service.engine, service.variants, service.feedback, choice["variant_id"]
+                ),
+            }
 
     @app.get("/recommendations")
     def recommendations(limit: int = Query(default=10, ge=1)):
         with service.lock:
-            rated = {item_id for item_id, _ in service.feedback}
-            ranking = rank_items(service.model, service.profile, exclude=rated, limit=limit)
+            rated = {variant_id for variant_id, _ in service.feedback}
+            ranking = rank_recommendations(
+                service.engine, service.posterior, exclude=rated, limit=limit
+            )
             evidence = evidence_strength(len(service.feedback))
             return {
                 "recommendations": [
                     {
-                        **service.items[item_id],
+                        **service.variants[variant_id],
                         "score": score,
                         "evidence_strength": evidence,
                         "reason": similarity_reason(
-                            service.model, service.items, service.feedback, item_id
+                            service.engine, service.variants, service.feedback, variant_id
                         ),
                     }
-                    for item_id, score in ranking
+                    for variant_id, score in ranking
                 ]
             }
 
     @app.post("/feedback")
     def feedback(request: FeedbackRequest):
         with service.lock:
-            if request.item_id not in service.items:
-                raise HTTPException(status_code=404, detail=f"unknown item: {request.item_id}")
+            if request.variant_id not in service.variants:
+                raise HTTPException(
+                    status_code=404, detail=f"unknown variant: {request.variant_id}"
+                )
             try:
-                store.add_feedback(service.conn, request.item_id, request.liked)
+                with service.conn.transaction():
+                    store.add_feedback(service.conn, request.variant_id, request.liked)
+                    new_feedback = store.load_feedback(service.conn)
+                    new_posterior = posterior_from_feedback(service.engine, new_feedback)
             except store.DuplicateFeedbackError as error:
                 raise HTTPException(
-                    status_code=409, detail=f"feedback already recorded for {request.item_id}"
+                    status_code=409, detail=f"feedback already recorded for {request.variant_id}"
                 ) from error
             except store.UnknownItemError as error:
                 raise HTTPException(
-                    status_code=404, detail=f"unknown item: {request.item_id}"
+                    status_code=404, detail=f"unknown variant: {request.variant_id}"
                 ) from error
             except psycopg.Error as error:
                 raise HTTPException(status_code=503, detail="database unavailable") from error
-            service.feedback = store.load_feedback(service.conn)
-            service.profile = refit_profile(service.model, service.feedback)
+            service.feedback = new_feedback
+            service.posterior = new_posterior
             count = len(service.feedback)
         return {
-            "item_id": request.item_id,
+            "variant_id": request.variant_id,
             "liked": request.liked,
             "feedback_count": count,
             "evidence_strength": evidence_strength(count),
@@ -183,7 +221,8 @@ def create_app(database_url=None, connect_attempts=CONNECT_ATTEMPTS,
             return {
                 "status": "ok",
                 "database": "ok",
-                "catalog_items": len(service.items),
+                "consumer_variants": len(service.variants),
+                "families": service.family_count,
                 "model_loaded": service.model is not None,
                 "feedback_count": len(service.feedback),
             }

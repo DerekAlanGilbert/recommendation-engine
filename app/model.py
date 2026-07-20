@@ -1,4 +1,11 @@
-"""Neural content recommender: canonical features, pretraining, online profile refit, ranking."""
+"""Neural content tower over consumer variants, plus the greedy profile baseline.
+
+The tower encodes each of the 6,606 consumer-facing variants into a frozen
+32-dimensional embedding from structured EPA attributes. The embeddings serve
+as the catalog similarity prior for the Bayesian preference engine, and the
+greedy profile-vector machinery (refit_profile/rank_items) remains as the
+simulation baseline and the held-out learning-quality proof.
+"""
 
 import random
 from collections import Counter
@@ -6,7 +13,7 @@ from typing import NamedTuple
 
 import torch
 
-from app.data import canonical_key, load_snapshot
+from app.data import consumer_key, family_id_of, load_snapshot
 
 # Single-threaded torch keeps every reduction order, and therefore every embedding,
 # score, and ranking, bit-reproducible across runs and restarts. The model is far
@@ -64,16 +71,26 @@ def _mean(values):
     return sum(present) / len(present) if present else None
 
 
-def build_item_features(variants):
-    """Aggregate source variants into one deterministic feature dict per canonical item."""
+def _primary_family_id(members):
+    counts = Counter(family_id_of(c) for c in members)
+    best = max(counts.values())
+    return min(family_id for family_id, count in counts.items() if count == best)
+
+
+def build_variant_features(configs):
+    """Aggregate EPA configs into one deterministic feature dict per consumer variant."""
     groups = {}
-    for variant in variants:
-        groups.setdefault(canonical_key(variant), []).append(variant)
+    for config in configs:
+        groups.setdefault(consumer_key(config), []).append(config)
     features = []
-    for year, make, base_model in sorted(groups):
-        members = groups[(year, make, base_model)]
+    for year, make, model in sorted(groups):
+        members = groups[(year, make, model)]
+        family_id = _primary_family_id(members)
         feature = {
-            "item_id": f"{year}|{make}|{base_model}",
+            "variant_id": f"{year}|{make}|{model}",
+            "family_id": family_id,
+            "model": model,
+            "base_model": family_id.split("|")[2],
             "year": year,
             "make": make,
             "vehicle_class": _modal([m["vehicle_class"] for m in members]),
@@ -89,8 +106,8 @@ def build_item_features(variants):
 
 
 def load_catalog_features(path=None):
-    variants = load_snapshot(path) if path is not None else load_snapshot()
-    return build_item_features(variants)
+    configs = load_snapshot(path) if path is not None else load_snapshot()
+    return build_variant_features(configs)
 
 
 class FeatureSpace(NamedTuple):
@@ -115,7 +132,7 @@ def build_feature_space(features):
 
 
 def encode_features(features, space):
-    """Encode canonical features as index and standardized tensors; missing numerics become 0."""
+    """Encode variant features as index and standardized tensors; missing numerics become 0."""
     categorical = torch.tensor(
         [[space.vocabs[name][f[name]] for name, _ in CATEGORICAL_FEATURES] for f in features],
         dtype=torch.long,
@@ -152,7 +169,7 @@ class ContentTower(torch.nn.Module):
         return self.mlp(torch.cat(parts + [numeric], dim=1))
 
 
-# Synthetic preference rules over real canonical attributes. Pretraining sees only
+# Synthetic preference rules over real variant attributes. Pretraining sees only
 # pretrain_rules(): dense single-attribute rules derived from the catalog. The
 # HELDOUT_RULES are novel attribute combinations whose labelings match no
 # pretraining rule; they exist solely for held-out evaluation and are never passed
@@ -204,23 +221,23 @@ HELDOUT_RULES = (
 
 
 def generate_interactions(features, rules, per_rule=120, seed=0):
-    """Deterministic balanced (profile, item, label) interactions for the given rules."""
+    """Deterministic balanced (profile, variant, label) interactions for the given rules."""
     interactions = []
     for profile_index, (_, predicate) in enumerate(rules):
         rng = random.Random(seed * 100003 + profile_index)
         positives = [i for i, f in enumerate(features) if predicate(f)]
         negatives = [i for i, f in enumerate(features) if not predicate(f)]
         count = min(per_rule, len(positives), len(negatives))
-        for item_index in sorted(rng.sample(positives, count)):
-            interactions.append((profile_index, item_index, 1.0))
-        for item_index in sorted(rng.sample(negatives, count)):
-            interactions.append((profile_index, item_index, 0.0))
+        for variant_index in sorted(rng.sample(positives, count)):
+            interactions.append((profile_index, variant_index, 1.0))
+        for variant_index in sorted(rng.sample(negatives, count)):
+            interactions.append((profile_index, variant_index, 0.0))
     return interactions
 
 
 class RecommenderModel(NamedTuple):
-    item_ids: tuple
-    embeddings: torch.Tensor  # frozen unit-norm (len(item_ids), EMBEDDING_DIM)
+    variant_ids: tuple
+    embeddings: torch.Tensor  # frozen unit-norm (len(variant_ids), EMBEDDING_DIM)
     bias: float
     index: dict
 
@@ -230,9 +247,9 @@ def _normalize(embeddings):
 
 
 def _freeze_model(features, embeddings, bias):
-    item_ids = tuple(f["item_id"] for f in features)
-    index = {item_id: row for row, item_id in enumerate(item_ids)}
-    return RecommenderModel(item_ids, _normalize(embeddings).detach().clone(), float(bias), index)
+    variant_ids = tuple(f["variant_id"] for f in features)
+    index = {variant_id: row for row, variant_id in enumerate(variant_ids)}
+    return RecommenderModel(variant_ids, _normalize(embeddings).detach().clone(), float(bias), index)
 
 
 def untrained_model(features, seed=0):
@@ -247,10 +264,10 @@ def untrained_model(features, seed=0):
 
 
 def pretrain(features, seed=0, epochs=500, lr=0.02, per_rule=120):
-    """Train the content tower on pretrain_rules() interactions and freeze item embeddings.
+    """Train the content tower on pretrain_rules() interactions and freeze variant embeddings.
 
-    Item embeddings live on the unit sphere during training and after freezing so
-    the online profile refit works in the same well-conditioned geometry.
+    Variant embeddings live on the unit sphere during training and after freezing so
+    similarity and profile refits work in the same well-conditioned geometry.
     """
     torch.manual_seed(seed)
     space = build_feature_space(features)
@@ -260,7 +277,7 @@ def pretrain(features, seed=0, epochs=500, lr=0.02, per_rule=120):
     bias = torch.nn.Parameter(torch.zeros(1))
     interactions = generate_interactions(features, rules, per_rule=per_rule, seed=seed)
     profile_index = torch.tensor([p for p, _, _ in interactions])
-    item_index = torch.tensor([i for _, i, _ in interactions])
+    variant_index = torch.tensor([i for _, i, _ in interactions])
     labels = torch.tensor([label for _, _, label in interactions])
     categorical, numeric = encode_features(features, space)
     parameters = list(tower.parameters()) + list(profiles.parameters()) + [bias]
@@ -268,8 +285,8 @@ def pretrain(features, seed=0, epochs=500, lr=0.02, per_rule=120):
     loss_fn = torch.nn.BCEWithLogitsLoss()
     for _ in range(epochs):
         optimizer.zero_grad()
-        item_embeddings = _normalize(tower(categorical, numeric))
-        logits = (profiles(profile_index) * item_embeddings[item_index]).sum(dim=1) + bias
+        variant_embeddings = _normalize(tower(categorical, numeric))
+        logits = (profiles(profile_index) * variant_embeddings[variant_index]).sum(dim=1) + bias
         loss_fn(logits, labels).backward()
         optimizer.step()
     with torch.no_grad():
@@ -282,16 +299,16 @@ def cold_start_profile():
 
 
 def refit_profile(model, feedback, steps=200, lr=0.5, l2=0.001):
-    """Refit the active profile from zero over the full feedback history.
+    """Refit the greedy baseline profile from zero over the full feedback history.
 
-    Full-batch gradient descent on frozen embeddings; feedback is sorted by item
+    Full-batch gradient descent on frozen embeddings; feedback is sorted by variant
     so the result is independent of event order.
     """
     events = sorted(feedback)
     profile = cold_start_profile()
     if not events:
         return profile
-    rows = model.embeddings[[model.index[item_id] for item_id, _ in events]]
+    rows = model.embeddings[[model.index[variant_id] for variant_id, _ in events]]
     labels = torch.tensor([1.0 if liked else 0.0 for _, liked in events])
     for _ in range(steps):
         logits = rows @ profile + model.bias
@@ -305,12 +322,12 @@ def score_items(model, profile):
 
 
 def rank_items(model, profile, exclude=frozenset(), limit=None):
-    """Score every canonical item exactly, drop rated ones, and sort deterministically."""
+    """Score every variant exactly, drop rated ones, and sort deterministically."""
     scores = score_items(model, profile)
     ranking = [
-        (item_id, float(scores[row]))
-        for row, item_id in enumerate(model.item_ids)
-        if item_id not in exclude
+        (variant_id, float(scores[row]))
+        for row, variant_id in enumerate(model.variant_ids)
+        if variant_id not in exclude
     ]
     ranking.sort(key=lambda pair: (-pair[1], pair[0]))
     return ranking if limit is None else ranking[:limit]
