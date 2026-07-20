@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: rec
       POSTGRES_DB: rec
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -14,6 +14,23 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://rec:rec@db:5432/rec
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # First start imports the catalog and pretrains, so allow a long grace.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
 
 volumes:
   pgdata:
