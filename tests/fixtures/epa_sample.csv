@@ -1,0 +1,9 @@
+id,make,model,baseModel,year,VClass,fuelType,drive,trany,cylinders,displ,city08,highway08,comb08,range,co2TailpipeGpm
+1001,Toyota,Camry LE,Camry,2016,Midsize Cars,Regular,Front-Wheel Drive,Automatic (S6),4,2.5,24,33,27,0,325.0
+1002,Toyota,Camry LE,Camry,2027,Midsize Cars,Regular,Front-Wheel Drive,Automatic (S6),4,2.5,28,39,32,0,278.0
+1003,Ferrari,812 Superfast,812,2020,Two Seaters,Premium,Rear-Wheel Drive,Automatic (AM7),12,6.5,12,16,13,0,661.0
+1010,Toyota,Camry LE,Camry,2017,Midsize Cars,Regular,Front-Wheel Drive,Automatic (S6),4,2.5,28,39,32,0,278.0
+1011,Toyota,Camry XSE,Camry,2017,Midsize Cars,Regular,Front-Wheel Drive,Automatic (S8),6,3.5,22,32,26,0,343.0
+1012,Toyota,Camry LE,Camry,2018,Midsize Cars,Regular,Front-Wheel Drive,Automatic (S8),4,2.5,28,39,32,0,278.0
+1020,Chevrolet,Bolt  EUV,,2026,Small Station Wagons,Electricity,Front-Wheel Drive,Automatic (A1),,,125,104,115,247,0.0
+1030,Mercedes-Benz,GLC 300 4matic,GLC,2019,Small Sport Utility Vehicle 4WD,Premium,All-Wheel Drive,Automatic (S9),4,2.0,21,28,24,0,370.0
