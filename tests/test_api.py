@@ -349,7 +349,11 @@ def test_vehicle_session_frontend_is_served_as_one_self_contained_html_file(clie
     assert 'fetch("/reset", { method: "POST" })' in html
     assert 'fetch("/probe")' in html
     assert 'fetch("/feedback"' in html
-    assert 'fetch("/recommendations?limit=5")' in html
+    assert 'fetch("/recommendations?limit=3")' in html
+    assert "Reading the signal" not in html
+    assert "Why this vehicle" not in html
+    assert 'id="sessionLabel"' not in html
+    assert 'id="explorationValue"' not in html
     assert "https://" not in html
     assert "<link" not in html
 

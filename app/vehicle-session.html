@@ -99,33 +99,14 @@
     border-radius: var(--radius-panel);
   }
 
-  .progress-strip {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    border-bottom: var(--border);
-    background: var(--gray-150);
-  }
-  .metric { padding: 13px 16px; border-right: var(--border); }
-  .metric:last-child { border-right: 0; }
-  .metric-label {
-    display: block;
-    margin-bottom: 2px;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: .06em;
-    text-transform: uppercase;
-    color: var(--gray-500);
-  }
-  .metric-value { font-family: var(--serif); font-size: 21px; color: var(--slate); }
-
-  .probe-shell { overflow: hidden; min-height: 594px; }
+  .probe-shell { overflow: hidden; }
   .probe-content { opacity: 1; transform: translateY(0); transition: opacity 160ms ease, transform 160ms ease; }
   .probe-content.changing { opacity: 0; transform: translateY(5px); }
   .vehicle-band {
     position: relative;
     overflow: hidden;
-    min-height: 180px;
-    padding: 28px 30px;
+    min-height: 168px;
+    padding: 25px 28px;
     color: var(--ivory);
     background: var(--slate);
   }
@@ -155,37 +136,26 @@
   .make { display: block; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--clay); }
   .model { display: block; margin-top: 3px; font-family: var(--serif); font-size: clamp(27px, 4vw, 39px); line-height: 1.08; color: var(--ivory); }
 
-  .vehicle-body { padding: 24px 28px 26px; }
-  .detail-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+  .vehicle-body { padding: 20px 24px 22px; }
+  .detail-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .detail {
     min-width: 0;
-    padding: 11px 12px;
+    padding: 9px 10px;
     border: 1px solid var(--gray-150);
     border-radius: var(--radius-row);
     background: var(--ivory);
   }
   .detail-label { display: block; font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--gray-500); }
   .detail-value { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; color: var(--slate); font-size: 13px; white-space: nowrap; }
-  .reason {
-    min-height: 44px;
-    margin-top: 16px;
-    padding: 11px 13px;
-    border-left: 3px solid var(--clay);
-    border-radius: var(--radius-row);
-    background: rgba(217,119,87,.06);
-    color: var(--gray-700);
-    font-size: 13px;
-  }
-  .reason strong { color: var(--slate); font-weight: 600; }
 
-  .vote-prompt { margin: 22px 0 12px; text-align: center; color: var(--slate); font-family: var(--serif); font-size: 18px; }
+  .vote-prompt { margin: 18px 0 10px; text-align: center; color: var(--slate); font-family: var(--serif); font-size: 17px; }
   .vote-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .vote {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 10px;
-    min-height: 58px;
+    min-height: 52px;
     border-radius: var(--radius-row);
     border: 1.5px solid var(--gray-300);
     background: var(--white);
@@ -216,7 +186,7 @@
   .recommendations { display: grid; gap: 8px; }
   .rec {
     display: grid;
-    grid-template-columns: 28px minmax(0, 1fr) auto;
+    grid-template-columns: 28px minmax(0, 1fr);
     gap: 10px;
     align-items: center;
     padding: 9px 10px;
@@ -230,7 +200,6 @@
   .rec:first-child .rec-rank { color: var(--clay); }
   .rec-title { min-width: 0; color: var(--slate); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rec-meta { font-family: var(--mono); font-size: 9px; color: var(--gray-500); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .rec-score { font-family: var(--mono); font-size: 9px; color: var(--gray-500); }
 
   .history { max-height: 260px; overflow: auto; padding-right: 2px; }
   .history-empty { padding: 18px 8px; color: var(--gray-500); font-size: 12px; text-align: center; }
@@ -328,11 +297,10 @@
     <div>
       <div class="eyebrow">Recommendation engine / live evaluator</div>
       <h1>Vehicle preference session</h1>
-      <p class="subtitle">One complete package at a time. Every reload starts clean.</p>
+      <p class="subtitle">One vehicle. One thumb. Repeat.</p>
     </div>
     <div class="session-state" aria-live="polite">
       <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">connecting</span></span>
-      <span class="pill" id="sessionLabel">session —</span>
     </div>
   </header>
 
@@ -347,12 +315,6 @@
         <button class="retry" id="retryButton" type="button">Try again</button>
       </div>
       <div id="experience">
-        <div class="progress-strip">
-          <div class="metric"><span class="metric-label">Thumbs</span><span class="metric-value" id="thumbCount">0</span></div>
-          <div class="metric"><span class="metric-label">Evidence</span><span class="metric-value" id="evidenceValue">0%</span></div>
-          <div class="metric"><span class="metric-label">Exploration</span><span class="metric-value" id="explorationValue">—</span></div>
-        </div>
-
         <div class="probe-content" id="probeContent">
           <div class="vehicle-band">
             <div class="eyebrow">Next active probe</div>
@@ -361,16 +323,15 @@
           </div>
           <div class="vehicle-body">
             <div class="detail-grid" id="details"></div>
-            <div class="reason" id="reason"><strong>Why this vehicle:</strong> waiting for the engine.</div>
-            <p class="vote-prompt">Would you choose this complete vehicle?</p>
+            <p class="vote-prompt">Would you choose it?</p>
             <div class="vote-actions">
               <button class="vote down" id="downButton" type="button" aria-label="Thumbs down">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v11M3.5 3h3.2c.7 0 1.3.6 1.3 1.3v8.4c0 .7-.6 1.3-1.3 1.3H3.5A1.5 1.5 0 0 1 2 12.5v-8A1.5 1.5 0 0 1 3.5 3Z"/><path d="M8 5.2c2-1.1 3.7-1.8 5.8-1.8h1.5c1.1 0 2 .8 2.2 1.8l1.3 6.2c.2 1.2-.7 2.3-1.9 2.3h-3.2l.7 3.6c.3 1.5-.8 2.9-2.3 2.9-.6 0-1.1-.3-1.4-.8L8 14"/></svg>
-                Not for me
+                Pass
               </button>
               <button class="vote up" id="upButton" type="button" aria-label="Thumbs up">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 21V10M3.5 21h3.2c.7 0 1.3-.6 1.3-1.3v-8.4c0-.7-.6-1.3-1.3-1.3H3.5A1.5 1.5 0 0 0 2 11.5v8A1.5 1.5 0 0 0 3.5 21Z"/><path d="M8 18.8c2 1.1 3.7 1.8 5.8 1.8h1.5c1.1 0 2-.8 2.2-1.8l1.3-6.2c.2-1.2-.7-2.3-1.9-2.3h-3.2l.7-3.6c.3-1.5-.8-2.9-2.3-2.9-.6 0-1.1.3-1.4.8L8 10"/></svg>
-                I’d consider it
+                Consider
               </button>
             </div>
             <div class="keys"><kbd>←</kbd> down &nbsp;·&nbsp; <kbd>→</kbd> up</div>
@@ -381,7 +342,7 @@
 
     <aside class="side" aria-label="Session progression">
       <section class="card side-card">
-        <div class="section-head"><h2>Best fit now</h2><span class="section-note">live top 5</span></div>
+        <div class="section-head"><h2>Best fit now</h2><span class="section-note">top 3</span></div>
         <div class="evidence-track" aria-hidden="true"><div class="evidence-fill" id="evidenceFill"></div></div>
         <div class="evidence-copy"><span>cold start</span><span id="evidenceLabel">0% evidence</span></div>
         <div class="recommendations" id="recommendations" style="margin-top:14px">
@@ -394,10 +355,6 @@
         <div class="history" id="history"><div class="history-empty">Your progression will appear here after the first thumb.</div></div>
       </section>
 
-      <section class="card side-card">
-        <div class="section-head"><h2>Reading the signal</h2></div>
-        <p style="margin:0;color:var(--gray-500);font-size:12px">The left card is the engine’s most useful next question. “Best fit now” is its separate exploitation ranking. Watch that list reorganize as evidence accumulates.</p>
-      </section>
     </aside>
   </div>
 
@@ -409,7 +366,6 @@
   "use strict";
 
   var state = {
-    sessionId: "",
     current: null,
     feedback: [],
     recommendations: [],
@@ -417,16 +373,11 @@
   };
 
   var el = {};
-  ["statusDot", "statusText", "sessionLabel", "loadingCover", "loadingTitle", "loadingDetail",
-   "errorPanel", "errorMessage", "experience", "probeContent", "thumbCount", "evidenceValue",
-   "explorationValue", "make", "model", "yearBackdrop", "details", "reason", "downButton",
+  ["statusDot", "statusText", "loadingCover", "loadingTitle", "loadingDetail",
+   "errorPanel", "errorMessage", "experience", "probeContent",
+   "make", "model", "yearBackdrop", "details", "downButton",
    "upButton", "recommendations", "evidenceFill", "evidenceLabel", "history", "historyCount",
    "retryButton"].forEach(function (id) { el[id] = document.getElementById(id); });
-
-  function sessionId() {
-    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID().slice(0, 8);
-    return Math.random().toString(16).slice(2, 10);
-  }
 
   function escapeHtml(value) {
     return String(value == null ? "—" : value)
@@ -463,15 +414,11 @@
 
   function detailsFor(vehicle) {
     var mpgLabel = vehicle.electric_range > 0 ? "Combined MPGe" : "Combined MPG";
-    var engine = vehicle.cylinders ? vehicle.cylinders + " cyl" : "Electric";
-    if (vehicle.displacement) engine += " · " + Number(vehicle.displacement).toFixed(1) + " L";
     return [
       ["Class", vehicle.vehicle_class],
       ["Fuel", vehicle.fuel_type],
       ["Drive", pretty(vehicle.drive_family)],
-      ["Transmission", pretty(vehicle.transmission_family)],
-      [mpgLabel, vehicle.combined_mpg],
-      ["Powertrain", engine]
+      [mpgLabel, vehicle.combined_mpg]
     ];
   }
 
@@ -486,15 +433,12 @@
         return '<div class="detail"><span class="detail-label">' + escapeHtml(pair[0]) +
           '</span><span class="detail-value" title="' + escapeHtml(pair[1]) + '">' + escapeHtml(pair[1]) + '</span></div>';
       }).join("");
-      el.reason.innerHTML = "<strong>Why this vehicle:</strong> " + escapeHtml(vehicle.reason) + ".";
-      el.explorationValue.textContent = percent(vehicle.exploration_weight, 0);
       el.probeContent.classList.remove("changing");
     }, 150);
   }
 
   function renderEvidence(value) {
     var bounded = Math.max(0, Math.min(1, Number(value) || 0));
-    el.evidenceValue.textContent = percent(bounded, 0);
     el.evidenceFill.style.width = percent(bounded, 1);
     el.evidenceLabel.textContent = percent(bounded, 0) + " evidence";
   }
@@ -507,15 +451,13 @@
       return '<div class="rec' + entered + '" title="' + escapeHtml(item.reason) + '">' +
         '<div class="rec-rank">' + (index + 1) + '</div>' +
         '<div><div class="rec-title">' + escapeHtml(item.year + " " + item.make + " " + item.model) + '</div>' +
-        '<div class="rec-meta">' + escapeHtml(item.vehicle_class + " · " + pretty(item.drive_family)) + '</div></div>' +
-        '<div class="rec-score">' + percent(item.score, 3) + '</div></div>';
+        '<div class="rec-meta">' + escapeHtml(item.vehicle_class + " · " + pretty(item.drive_family)) + '</div></div></div>';
     }).join("");
     if (!items.length) el.recommendations.innerHTML = '<div class="history-empty">No unrated recommendations remain.</div>';
   }
 
   function renderHistory() {
     el.historyCount.textContent = state.feedback.length + (state.feedback.length === 1 ? " reaction" : " reactions");
-    el.thumbCount.textContent = state.feedback.length;
     if (!state.feedback.length) {
       el.history.innerHTML = '<div class="history-empty">Your progression will appear here after the first thumb.</div>';
       return;
@@ -532,7 +474,7 @@
   async function loadSurface() {
     var results = await Promise.all([
       fetch("/probe").then(jsonResponse),
-      fetch("/recommendations?limit=5").then(jsonResponse)
+      fetch("/recommendations?limit=3").then(jsonResponse)
     ]);
     renderProbe(results[0]);
     renderRecommendations(results[1].recommendations);
@@ -540,11 +482,9 @@
   }
 
   async function boot() {
-    state.sessionId = sessionId();
     state.current = null;
     state.feedback = [];
     state.recommendations = [];
-    el.sessionLabel.textContent = "session " + state.sessionId;
     el.errorPanel.classList.remove("on");
     el.experience.style.display = "block";
     renderHistory();

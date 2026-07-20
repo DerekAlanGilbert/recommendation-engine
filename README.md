@@ -29,7 +29,7 @@ their latent ideal package, choosing each probe to learn efficiently.
   mutable state, and a restart reconstructs identical probe and rankings.
 - **Browser session** — the FastAPI root serves one self-contained HTML page
   for reacting to one complete vehicle at a time. It shows the active probe,
-  live top-five recommendations, evidence strength, and the current reaction
+  live top-three recommendations, evidence strength, and the current reaction
   history without adding a frontend framework or external assets.
 
 ## Browser interface
