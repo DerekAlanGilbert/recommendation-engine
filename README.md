@@ -44,9 +44,18 @@ their latent ideal package, choosing each probe to learn efficiently.
 docker compose up -d db                      # pgvector PostgreSQL on :5433
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/uvicorn app.main:app --port 8000   # imports catalog + pretrains on first start
+.venv/bin/hatch run serve                    # imports catalog + pretrains on first start
 curl -s localhost:8000/probe | python3 -m json.tool
 ```
+
+Project maintenance goes through [Hatch](https://hatch.pypa.io) (pinned in
+`requirements-dev.txt`, so the bootstrap above installs it); its default
+environment reuses `./.venv`, and commands are written as `.venv/bin/hatch`
+so they work without activating the venv. `pyproject.toml` is the
+authoritative dependency source; `requirements.txt` (Docker image) and
+`requirements-dev.txt` (plain-pip bootstrap) are derived mirrors, and
+`tests/test_packaging.py` fails the suite if they drift. Working without
+hatch is fine — every command below is a thin wrapper over `python -m ...`.
 
 Or run both services in containers: `docker compose up` (API on :8000).
 The current exact pairwise preference engine uses about **0.9 GiB** of steady
@@ -75,8 +84,10 @@ Tests never call the network. Postgres suites create and drop isolated
 databases (`rec_test`, `rec_test_api`) and never touch development data.
 
 ```bash
-.venv/bin/python -m pytest -q        # full suite; needs the compose db running
-.venv/bin/python -m app.simulate     # deterministic offline proof report
+.venv/bin/hatch run test             # full suite; needs the compose db running
+.venv/bin/hatch run test-nodb        # everything that runs without PostgreSQL
+.venv/bin/hatch run verify           # compilation + git diff --check + full suite
+.venv/bin/hatch run simulate         # deterministic offline proof report
 ```
 
 ## Experiments
@@ -90,8 +101,8 @@ files (`--replot` regenerates them), and `--validate` checks a run's
 artifact set without recomputing anything.
 
 ```bash
-.venv/bin/python -m app.experiment       # full run: 4 policies × both cohorts (~9 min)
-.venv/bin/python -m app.experiment --validate artifacts/experiments/targeted-eig-aec84a9237
+.venv/bin/hatch run experiment           # full run: 4 policies × both cohorts (~9 min)
+.venv/bin/hatch run validate-experiment  # integrity-check the checked-in run below
 .venv/bin/python -m app.experiment --replot artifacts/experiments/<id>   # re-render charts
 ```
 

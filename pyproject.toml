@@ -1,0 +1,50 @@
+# Authoritative dependency source. requirements.txt / requirements-dev.txt are
+# derived mirrors kept for the Docker image and plain-pip bootstrap;
+# tests/test_packaging.py fails if the mirrors drift from this file.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "recommendation-engine"
+version = "0.1.0"
+description = "Thumbs-only Bayesian active preference elicitation over a real U.S. vehicle catalog"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch==2.13.0",
+    "numpy==2.5.1",
+    "psycopg[binary]==3.3.4",
+    "pgvector==0.5.0",
+    "fastapi==0.139.2",
+    "uvicorn==0.51.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# The default env reuses ./.venv so hatch, the plain-pip bootstrap, and the
+# test suite all share one verified environment.
+[tool.hatch.envs.default]
+path = ".venv"
+dependencies = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+    "matplotlib==3.11.1",
+]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:-q}"
+# Everything that runs without the compose PostgreSQL database (includes the
+# slow simulation suite; the Postgres and API suites are the only exclusions).
+test-nodb = "pytest -q --ignore=tests/test_postgres.py --ignore=tests/test_api.py {args}"
+verify = [
+    "python -m compileall -q app tests scripts",
+    "git diff --check",
+    "pytest {args:-q}",
+]
+simulate = "python -m app.simulate {args}"
+experiment = "python -m app.experiment {args}"
+serve = "uvicorn app.main:app --port 8000 {args}"
+validate-experiment = "python -m app.experiment --validate {args:artifacts/experiments/targeted-eig-aec84a9237}"
