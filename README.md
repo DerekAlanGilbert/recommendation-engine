@@ -75,9 +75,53 @@ Tests never call the network. Postgres suites create and drop isolated
 databases (`rec_test`, `rec_test_api`) and never touch development data.
 
 ```bash
-.venv/bin/python -m pytest -q        # 85 tests; needs the compose db running
+.venv/bin/python -m pytest -q        # full suite; needs the compose db running
 .venv/bin/python -m app.simulate     # deterministic offline proof report
 ```
+
+## Experiments
+
+Every experiment run automatically writes raw results and charts under
+`artifacts/experiments/<experiment-id>/`, checked into the repository:
+`events.csv` (every per-loop row), `summary.json` + `summary.csv`
+(aggregates), and four charts (`progress.png`, `topk.png`,
+`information.png`, `tundra.png`). Charts are a pure function of the raw
+files (`--replot` regenerates them), and `--validate` checks a run's
+artifact set without recomputing anything.
+
+```bash
+.venv/bin/python -m app.experiment       # full run: 4 policies × both cohorts (~9 min)
+.venv/bin/python -m app.experiment --validate artifacts/experiments/targeted-eig-aec84a9237
+.venv/bin/python -m app.experiment --replot artifacts/experiments/<id>   # re-render charts
+```
+
+The comparison covers the greedy baseline, passive Bayesian, the frozen
+joint-EIG active baseline, and the `targeted` experimental arm, on a frozen
+36-target held-out cohort (default persona, plus a labeled persona-robustness
+slice) and the 12-target development cohort (contaminated by constant
+selection; regression/sanity reporting only).
+
+### Measured result: targeted EIG is a no-go (run `targeted-eig-aec84a9237`)
+
+Replacing the probe objective I(response; T, Θ) with targeted
+I(response; T) — threshold integrated out as a nuisance — was measured on
+the frozen held-out cohort and **rejected**. Joint EIG remains the product
+and API default; `targeted` is retained only as a named comparison arm of
+`select_probe`/the experiment runner. Held-out cohort, default persona:
+
+| metric | joint EIG (default) | targeted EIG (arm) |
+|---|---|---|
+| median target rank @5 thumbs | **651** | 1,218 |
+| median target rank @15 thumbs | **795** | 1,436 |
+| surfaced (probe or top-10) @5 / @15 | **13.9% / 30.6%** | 5.6% / 16.7% |
+| top-10 @5 / @15 | 2.8% / 5.6% | 2.8% / 5.6% |
+| median first thumbs-up loop | >15 (censored) | >15 (censored) |
+| median cumulative variant bits @4 | 0.0113 | 0.0113 |
+
+Both robustness personas and the development cohort agree in direction; the
+development Tundra case is descriptive only (joint 159→21 over 15 loops,
+targeted stalls near rank 4,000 until loop 10). Full raw data and charts:
+`artifacts/experiments/targeted-eig-aec84a9237/`.
 
 ## Measured development baseline (deterministic)
 

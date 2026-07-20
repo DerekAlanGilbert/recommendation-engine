@@ -15,12 +15,15 @@ isolated: `greedy` (the previous product's profile-vector top score),
 Run `python -m app.simulate` for the full per-loop report.
 """
 
+from typing import NamedTuple
+
 from app.model import rank_items, refit_profile, score_items
 from app.preference import (
     model_tokens,
     posterior_from_feedback,
     rank_recommendations,
     select_probe,
+    variant_entropy_bits,
     variant_marginal,
 )
 
@@ -47,6 +50,21 @@ YEAR_SCALE = 2.0
 BASE_THRESHOLD = 4.0
 ASPIRATION_MARGIN = 0.1
 
+
+class Persona(NamedTuple):
+    """One hidden-shopper temperament: the satisficing bar as explicit data.
+
+    The default persona reproduces the original constants exactly; alternative
+    personas exist only for labeled robustness checks, never for tuning.
+    """
+
+    name: str
+    base_threshold: float
+    aspiration_margin: float
+
+
+DEFAULT_PERSONA = Persona("default", BASE_THRESHOLD, ASPIRATION_MARGIN)
+
 TUNDRA_PRO = "2025|Toyota|Tundra 4WD PRO"
 
 # Deterministic multi-target cohort spanning makes, vehicle classes, and
@@ -67,6 +85,11 @@ COHORT_TARGETS = (
 )
 
 POLICIES = ("greedy", "passive", "active")
+
+# The Bayesian active policies differ only in the probe-acquisition objective:
+# "active" is the frozen joint-EIG baseline I(response; T, Θ); "targeted" is
+# the treatment I(response; T) with the threshold integrated out as a nuisance.
+PROBE_OBJECTIVES = {"active": "joint", "targeted": "targeted"}
 
 
 def _closeness(a, b, scale):
@@ -95,15 +118,17 @@ def shopper_utility(ideal, candidate):
     )
 
 
-def shopper_thumb(ideal, candidate, best_liked_utility=None):
+def shopper_thumb(ideal, candidate, best_liked_utility=None,
+                  base_threshold=BASE_THRESHOLD, aspiration_margin=ASPIRATION_MARGIN):
     """The only observable signal: one thumb on the complete package.
 
     `best_liked_utility` is the shopper's own best already-endorsed utility;
-    passing None models the start of a session.
+    passing None models the start of a session. The bar parameters default to
+    the original constants (the default persona).
     """
-    bar = BASE_THRESHOLD
+    bar = base_threshold
     if best_liked_utility is not None:
-        bar = max(bar, best_liked_utility + ASPIRATION_MARGIN)
+        bar = max(bar, best_liked_utility + aspiration_margin)
     return shopper_utility(ideal, candidate) >= bar
 
 
@@ -126,7 +151,7 @@ def _greedy_rank_and_score(model, profile, target_id):
     return rank, float(score_items(model, profile)[model.index[target_id]])
 
 
-def rollout(policy, model, engine, features, target_id, loops=5):
+def rollout(policy, model, engine, features, target_id, loops=5, persona=None):
     """Run one shopper against one policy; report per-loop identification state.
 
     `target_rank` is the target's position in the policy's full ranking over
@@ -137,6 +162,7 @@ def rollout(policy, model, engine, features, target_id, loops=5):
     either as the probe or inside the top-10 recommendations they would see
     after their thumb was recorded.
     """
+    persona = persona or DEFAULT_PERSONA
     by_id = {f["variant_id"]: f for f in features}
     ideal = by_id[target_id]
     feedback = []
@@ -144,25 +170,32 @@ def rollout(policy, model, engine, features, target_id, loops=5):
     best_liked_utility = None
     for loop in range(1, loops + 1):
         rated = {variant_id for variant_id, _ in feedback}
-        if policy == "active":
-            probe_id = select_probe(engine, posterior_from_feedback(engine, feedback),
-                                    feedback)["variant_id"]
-        elif policy == "passive":
-            order = _bayes_order(engine, posterior_from_feedback(engine, feedback))
-            probe_id = next(engine.variant_ids[row] for row in order
-                            if engine.variant_ids[row] not in rated)
-        elif policy == "greedy":
+        entropy_before = None
+        if policy == "greedy":
             profile = refit_profile(model, feedback)
             probe_id = rank_items(model, profile, exclude=rated, limit=1)[0][0]
+        elif policy in ("passive",) or policy in PROBE_OBJECTIVES:
+            posterior_before = posterior_from_feedback(engine, feedback)
+            entropy_before = variant_entropy_bits(posterior_before)
+            if policy == "passive":
+                order = _bayes_order(engine, posterior_before)
+                probe_id = next(engine.variant_ids[row] for row in order
+                                if engine.variant_ids[row] not in rated)
+            else:
+                probe_id = select_probe(engine, posterior_before, feedback,
+                                        objective=PROBE_OBJECTIVES[policy])["variant_id"]
         else:
             raise ValueError(f"unknown policy: {policy}")
-        liked = shopper_thumb(ideal, by_id[probe_id], best_liked_utility)
+        liked = shopper_thumb(ideal, by_id[probe_id], best_liked_utility,
+                              base_threshold=persona.base_threshold,
+                              aspiration_margin=persona.aspiration_margin)
         if liked:
             utility = shopper_utility(ideal, by_id[probe_id])
             if best_liked_utility is None or utility > best_liked_utility:
                 best_liked_utility = utility
         feedback.append((probe_id, liked))
         rated_now = {variant_id for variant_id, _ in feedback}
+        entropy_after = None
         if policy == "greedy":
             profile = refit_profile(model, feedback)
             target_rank, target_share = _greedy_rank_and_score(model, profile, target_id)
@@ -170,6 +203,7 @@ def rollout(policy, model, engine, features, target_id, loops=5):
             shown = [v for v, _ in rank_items(model, profile, exclude=rated_now, limit=10)]
         else:
             posterior = posterior_from_feedback(engine, feedback)
+            entropy_after = variant_entropy_bits(posterior)
             order = _bayes_order(engine, posterior)
             target_rank = order.index(engine.index[target_id]) + 1
             target_share = float(variant_marginal(posterior)[engine.index[target_id]])
@@ -184,6 +218,10 @@ def rollout(policy, model, engine, features, target_id, loops=5):
             "target_share": target_share,
             "top_id": top_id,
             "surfaced": probe_id == target_id or target_id in shown,
+            "entropy_before_bits": entropy_before,
+            "entropy_after_bits": entropy_after,
+            "realized_bits": (None if entropy_before is None
+                              else entropy_before - entropy_after),
         })
     return records
 
@@ -222,6 +260,13 @@ def _median(values):
 
 
 def main():
+    import argparse
+
+    argparse.ArgumentParser(
+        description="Deterministic offline simulation report: greedy, passive, and "
+                    "active joint-EIG policies over the development cohort."
+    ).parse_args()
+
     from app.data import load_snapshot
     from app.model import build_variant_features, pretrain
     from app.preference import build_engine

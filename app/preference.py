@@ -173,6 +173,13 @@ def threshold_marginal(posterior):
     return posterior.sum(dim=1)
 
 
+def variant_entropy_bits(posterior):
+    """Shannon entropy (bits) of the variant-marginal posterior."""
+    marginal = variant_marginal(posterior)
+    positive = marginal[marginal > 0]
+    return float(-(positive * torch.log(positive)).sum()) / _LN2
+
+
 def exploration_weight(posterior):
     """Normalized variant-marginal entropy, capped so exploitation always keeps weight."""
     marginal = variant_marginal(posterior)
@@ -216,30 +223,76 @@ def _binary_entropy_bits(p):
     ) / _LN2
 
 
-def select_probe(engine, posterior, feedback=()):
-    """Pick the pool candidate maximizing the explore/exploit acquisition.
-
-    Expected information gain is the mutual information (bits) between one
-    binary response and the joint (variant, threshold) hypothesis. The
-    exploitation side blends predictive approval (plausibility: never probe
-    absurd packages for information alone) with the variant-marginal posterior
-    (as uncertainty falls, the probe becomes "is the current best guess your
-    ideal?").
-    """
-    rated = {variant_id for variant_id, _ in feedback}
-    marginal = variant_marginal(posterior)
-    pool = _candidate_pool(engine, marginal, rated)
-    if not pool:
-        return None
+def _joint_gain_and_approval(engine, posterior, rows):
+    """I(response; T, Θ) in bits, plus predictive approval, per candidate row."""
     weights = posterior.to(torch.float32)  # (k, n)
-    approval = torch.zeros(len(pool))
-    conditional_entropy = torch.zeros(len(pool))
-    similarity_rows = engine.similarity[pool]  # (m, n)
+    approval = torch.zeros(len(rows))
+    conditional_entropy = torch.zeros(len(rows))
+    similarity_rows = engine.similarity[rows]  # (m, n)
     for level, theta in enumerate(engine.thetas):
         likelihood = torch.sigmoid(SHARPNESS * (similarity_rows - theta))
         approval += likelihood @ weights[level]
         conditional_entropy += _binary_entropy_bits(likelihood) @ weights[level]
     gain = (_binary_entropy_bits(approval) - conditional_entropy).clamp(min=0.0)
+    return gain, approval
+
+
+def _targeted_gain_and_approval(engine, posterior, rows):
+    """I(response; T) in bits — threshold integrated out per target hypothesis.
+
+    For each candidate x and target t, the θ-marginalized approval predictive
+    is p_t(x) = Σ_θ π(t, θ)·l(x, t, θ) / m(t); the gain is the mutual
+    information between the binary response and T alone, so bits spent
+    learning only the nuisance threshold no longer count. Targets with zero
+    marginal mass contribute nothing (their joint term is exactly zero).
+    """
+    weights = posterior.to(torch.float32)  # (k, n)
+    similarity_rows = engine.similarity[rows]  # (m, n)
+    joint_up = torch.zeros(similarity_rows.shape)  # Σ_θ π(t, θ)·l(x, t, θ)
+    for level, theta in enumerate(engine.thetas):
+        joint_up += torch.sigmoid(SHARPNESS * (similarity_rows - theta)) * weights[level]
+    approval = joint_up.sum(dim=1)
+    marginal = weights.sum(dim=0)  # m(t)
+    per_target = (joint_up / torch.where(marginal > 0, marginal, 1.0)).clamp(0.0, 1.0)
+    conditional_entropy = _binary_entropy_bits(per_target) @ marginal
+    gain = (_binary_entropy_bits(approval) - conditional_entropy).clamp(min=0.0)
+    return gain, approval
+
+
+def joint_information_gain(engine, posterior, rows):
+    return _joint_gain_and_approval(engine, posterior, rows)[0]
+
+
+def targeted_information_gain(engine, posterior, rows):
+    return _targeted_gain_and_approval(engine, posterior, rows)[0]
+
+
+GAIN_OBJECTIVES = {
+    "joint": _joint_gain_and_approval,
+    "targeted": _targeted_gain_and_approval,
+}
+
+
+def select_probe(engine, posterior, feedback=(), objective="joint"):
+    """Pick the pool candidate maximizing the explore/exploit acquisition.
+
+    Expected information gain is mutual information (bits) between one binary
+    response and either the joint (variant, threshold) hypothesis
+    (`objective="joint"`, the frozen baseline) or the ideal variant alone with
+    the threshold treated as a nuisance parameter (`objective="targeted"`).
+    The exploitation side blends predictive approval (plausibility: never
+    probe absurd packages for information alone) with the variant-marginal
+    posterior (as uncertainty falls, the probe becomes "is the current best
+    guess your ideal?").
+    """
+    if objective not in GAIN_OBJECTIVES:
+        raise ValueError(f"unknown probe objective: {objective}")
+    rated = {variant_id for variant_id, _ in feedback}
+    marginal = variant_marginal(posterior)
+    pool = _candidate_pool(engine, marginal, rated)
+    if not pool:
+        return None
+    gain, approval = GAIN_OBJECTIVES[objective](engine, posterior, pool)
     weight = exploration_weight(posterior)
     exploit = (marginal[pool] / marginal.max()).to(torch.float32)
     acquisition = weight * gain + (1.0 - weight) * 0.5 * (approval + exploit)
