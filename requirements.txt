@@ -3,3 +3,6 @@ numpy
 pytest
 psycopg[binary]
 pgvector
+fastapi
+uvicorn
+httpx
