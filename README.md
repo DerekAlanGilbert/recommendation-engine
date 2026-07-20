@@ -27,11 +27,26 @@ their latent ideal package, choosing each probe to learn efficiently.
   sweeps the catalog coarse-to-fine.
 - **Persistence** — PostgreSQL + pgvector; feedback is the only authoritative
   mutable state, and a restart reconstructs identical probe and rankings.
+- **Browser session** — the FastAPI root serves one self-contained HTML page
+  for reacting to one complete vehicle at a time. It shows the active probe,
+  live top-five recommendations, evidence strength, and the current reaction
+  history without adding a frontend framework or external assets.
+
+## Browser interface
+
+Open `http://127.0.0.1:8000/` after starting the service. The page accepts only
+thumbs-up/down feedback, updates the probe and best-fit ranking immediately,
+and supports the left/right arrow keys. Every page load calls `POST /reset`
+before fetching the first probe, so a reload starts a clean evaluation session.
+
+The proof intentionally maintains one active profile. Opening or reloading the
+page in any tab therefore resets the same shared local evaluation state.
 
 ## API
 
 | Method | Path | Behavior |
 |---|---|---|
+| GET | `/` | self-contained vehicle preference session |
 | POST | `/reset` | clear feedback, reproducible cold start |
 | GET | `/probe` | next package for feedback (+ information gain, approval, exploration weight) |
 | GET | `/recommendations?limit=N` | best-fit unrated variants by marginal posterior, family-capped |
@@ -45,6 +60,7 @@ docker compose up -d db                      # pgvector PostgreSQL on :5433
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/hatch run serve                    # imports catalog + pretrains on first start
+open http://127.0.0.1:8000                   # interactive vehicle session
 curl -s localhost:8000/probe | python3 -m json.tool
 ```
 
@@ -57,7 +73,8 @@ authoritative dependency source; `requirements.txt` (Docker image) and
 `tests/test_packaging.py` fails the suite if they drift. Working without
 hatch is fine — every command below is a thin wrapper over `python -m ...`.
 
-Or run both services in containers: `docker compose up` (API on :8000).
+Or run both services in containers: `docker compose up` (interface and API on
+`:8000`).
 The current exact pairwise preference engine uses about **0.9 GiB** of steady
 container memory and peaks near **1.1 GiB** while building its similarity
 matrix, so allocate at least 2 GiB to Docker. No GPU is required. Compose

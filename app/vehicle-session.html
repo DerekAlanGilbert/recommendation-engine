@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vehicle Preference Session</title>
+<style>
+  :root {
+    --ivory: #FAF9F5;
+    --white: #FFFFFF;
+    --slate: #141413;
+    --clay: #D97757;
+    --olive: #788C5D;
+    --rust: #B04A3F;
+    --oat: #E3DACC;
+    --gray-150: #F0EEE6;
+    --gray-300: #D1CFC5;
+    --gray-500: #87867F;
+    --gray-700: #3D3D3A;
+    --border: 1.5px solid var(--gray-300);
+    --radius-panel: 12px;
+    --radius-row: 8px;
+    --radius-pill: 999px;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--ivory);
+    color: var(--gray-700);
+    font-family: var(--sans);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; }
+  .page { max-width: 1120px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--gray-500);
+  }
+  header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  h1, h2, h3 {
+    font-family: var(--serif);
+    font-weight: 500;
+    letter-spacing: -.01em;
+    color: var(--slate);
+  }
+  h1 { margin: 5px 0 2px; font-size: clamp(28px, 4vw, 40px); line-height: 1.1; }
+  h2 { margin: 0; font-size: 20px; }
+  h3 { margin: 0; font-size: 17px; }
+  .subtitle { margin: 5px 0 0; color: var(--gray-500); font-size: 14px; }
+
+  .session-state {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: var(--border);
+    border-radius: var(--radius-pill);
+    padding: 5px 10px;
+    background: var(--white);
+    color: var(--gray-500);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gray-300); }
+  .dot.online { background: var(--olive); box-shadow: 0 0 0 3px rgba(120,140,93,.14); }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(310px, .8fr);
+    gap: 20px;
+    align-items: start;
+  }
+  .card {
+    background: var(--white);
+    border: var(--border);
+    border-radius: var(--radius-panel);
+  }
+
+  .progress-strip {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border-bottom: var(--border);
+    background: var(--gray-150);
+  }
+  .metric { padding: 13px 16px; border-right: var(--border); }
+  .metric:last-child { border-right: 0; }
+  .metric-label {
+    display: block;
+    margin-bottom: 2px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--gray-500);
+  }
+  .metric-value { font-family: var(--serif); font-size: 21px; color: var(--slate); }
+
+  .probe-shell { overflow: hidden; min-height: 594px; }
+  .probe-content { opacity: 1; transform: translateY(0); transition: opacity 160ms ease, transform 160ms ease; }
+  .probe-content.changing { opacity: 0; transform: translateY(5px); }
+  .vehicle-band {
+    position: relative;
+    overflow: hidden;
+    min-height: 180px;
+    padding: 28px 30px;
+    color: var(--ivory);
+    background: var(--slate);
+  }
+  .vehicle-band::after {
+    content: "";
+    position: absolute;
+    width: 280px;
+    height: 280px;
+    right: -90px;
+    top: -110px;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 50%;
+    box-shadow: 0 0 0 34px rgba(255,255,255,.025), 0 0 0 70px rgba(255,255,255,.02);
+  }
+  .vehicle-band .eyebrow { color: rgba(250,249,245,.58); }
+  .vehicle-year {
+    position: absolute;
+    right: 28px;
+    bottom: -14px;
+    font-family: var(--serif);
+    font-size: 86px;
+    line-height: 1;
+    color: rgba(250,249,245,.08);
+    user-select: none;
+  }
+  .vehicle-name { position: relative; z-index: 1; max-width: 76%; margin: 18px 0 0; }
+  .make { display: block; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--clay); }
+  .model { display: block; margin-top: 3px; font-family: var(--serif); font-size: clamp(27px, 4vw, 39px); line-height: 1.08; color: var(--ivory); }
+
+  .vehicle-body { padding: 24px 28px 26px; }
+  .detail-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+  .detail {
+    min-width: 0;
+    padding: 11px 12px;
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-row);
+    background: var(--ivory);
+  }
+  .detail-label { display: block; font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--gray-500); }
+  .detail-value { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; color: var(--slate); font-size: 13px; white-space: nowrap; }
+  .reason {
+    min-height: 44px;
+    margin-top: 16px;
+    padding: 11px 13px;
+    border-left: 3px solid var(--clay);
+    border-radius: var(--radius-row);
+    background: rgba(217,119,87,.06);
+    color: var(--gray-700);
+    font-size: 13px;
+  }
+  .reason strong { color: var(--slate); font-weight: 600; }
+
+  .vote-prompt { margin: 22px 0 12px; text-align: center; color: var(--slate); font-family: var(--serif); font-size: 18px; }
+  .vote-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .vote {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 58px;
+    border-radius: var(--radius-row);
+    border: 1.5px solid var(--gray-300);
+    background: var(--white);
+    color: var(--slate);
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 13px;
+    transition: transform 100ms ease, border-color 100ms ease, background 100ms ease;
+  }
+  .vote:hover { transform: translateY(-1px); }
+  .vote:active { transform: translateY(0); }
+  .vote svg { width: 21px; height: 21px; }
+  .vote.down:hover { border-color: var(--rust); background: rgba(176,74,63,.05); }
+  .vote.up { color: var(--white); border-color: var(--olive); background: var(--olive); }
+  .vote.up:hover { background: #687d50; }
+  .vote:disabled { cursor: wait; opacity: .48; transform: none; }
+  .keys { margin-top: 10px; text-align: center; font-family: var(--mono); font-size: 10px; color: var(--gray-500); }
+  kbd { border: 1px solid var(--gray-300); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; background: var(--gray-150); }
+
+  .side { display: grid; gap: 16px; }
+  .side-card { padding: 18px; }
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+  .section-note { font-family: var(--mono); font-size: 10px; color: var(--gray-500); }
+  .evidence-track { height: 7px; overflow: hidden; border-radius: var(--radius-pill); background: var(--gray-150); }
+  .evidence-fill { width: 0; height: 100%; border-radius: inherit; background: var(--clay); transition: width 260ms ease; }
+  .evidence-copy { display: flex; justify-content: space-between; margin-top: 7px; font-family: var(--mono); font-size: 10px; color: var(--gray-500); }
+
+  .recommendations { display: grid; gap: 8px; }
+  .rec {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 10px;
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-row);
+    background: var(--ivory);
+  }
+  .rec.entered { animation: rec-enter 420ms ease both; border-color: rgba(217,119,87,.55); }
+  @keyframes rec-enter { from { opacity: .35; transform: translateX(5px); } to { opacity: 1; transform: none; } }
+  .rec-rank { font-family: var(--serif); font-size: 18px; color: var(--gray-500); text-align: center; }
+  .rec:first-child .rec-rank { color: var(--clay); }
+  .rec-title { min-width: 0; color: var(--slate); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rec-meta { font-family: var(--mono); font-size: 9px; color: var(--gray-500); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rec-score { font-family: var(--mono); font-size: 9px; color: var(--gray-500); }
+
+  .history { max-height: 260px; overflow: auto; padding-right: 2px; }
+  .history-empty { padding: 18px 8px; color: var(--gray-500); font-size: 12px; text-align: center; }
+  .history-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 25px minmax(0, 1fr);
+    gap: 9px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--gray-150);
+  }
+  .history-row:last-child { border-bottom: 0; }
+  .thumb-mark {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    color: var(--white);
+    font-size: 12px;
+    background: var(--rust);
+  }
+  .thumb-mark.up { background: var(--olive); }
+  .history-title { color: var(--slate); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .history-meta { font-family: var(--mono); font-size: 9px; color: var(--gray-500); }
+
+  .loading-cover {
+    position: absolute;
+    inset: 0;
+    z-index: 8;
+    display: grid;
+    place-items: center;
+    padding: 30px;
+    background: rgba(250,249,245,.96);
+    transition: opacity 180ms ease;
+  }
+  .loading-cover.hidden { opacity: 0; pointer-events: none; }
+  .loader { text-align: center; }
+  .loader-ring {
+    width: 34px;
+    height: 34px;
+    margin: 0 auto 13px;
+    border: 3px solid var(--gray-300);
+    border-top-color: var(--clay);
+    border-radius: 50%;
+    animation: spin 700ms linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loader strong { display: block; font-family: var(--serif); font-size: 17px; color: var(--slate); }
+  .loader span { display: block; margin-top: 4px; font-family: var(--mono); font-size: 10px; color: var(--gray-500); }
+  .probe-wrap { position: relative; }
+
+  .error-panel { display: none; padding: 30px; text-align: center; }
+  .error-panel.on { display: block; }
+  .error-panel p { color: var(--gray-500); font-size: 13px; }
+  .retry {
+    margin-top: 12px;
+    padding: 8px 14px;
+    border: var(--border);
+    border-radius: var(--radius-pill);
+    background: var(--slate);
+    color: var(--white);
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  .footer-note { margin-top: 16px; text-align: center; font-family: var(--mono); font-size: 10px; color: var(--gray-500); }
+
+  @media (max-width: 850px) {
+    .layout { grid-template-columns: 1fr; }
+    .side { grid-template-columns: 1fr 1fr; }
+    .side-card:first-child { grid-column: 1 / -1; }
+  }
+  @media (max-width: 620px) {
+    .page { padding: 22px 14px 56px; }
+    header { align-items: flex-start; flex-direction: column; }
+    .session-state { justify-content: flex-start; }
+    .detail-grid { grid-template-columns: 1fr 1fr; }
+    .side { grid-template-columns: 1fr; }
+    .side-card:first-child { grid-column: auto; }
+    .vehicle-band { min-height: 168px; padding: 24px 22px; }
+    .vehicle-body { padding: 20px; }
+    .vehicle-name { max-width: 92%; }
+    .vehicle-year { font-size: 64px; right: 18px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <header>
+    <div>
+      <div class="eyebrow">Recommendation engine / live evaluator</div>
+      <h1>Vehicle preference session</h1>
+      <p class="subtitle">One complete package at a time. Every reload starts clean.</p>
+    </div>
+    <div class="session-state" aria-live="polite">
+      <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">connecting</span></span>
+      <span class="pill" id="sessionLabel">session —</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <section class="card probe-shell probe-wrap" aria-label="Vehicle to evaluate">
+      <div class="loading-cover" id="loadingCover">
+        <div class="loader"><div class="loader-ring"></div><strong id="loadingTitle">Creating a clean session</strong><span id="loadingDetail">Resetting feedback and loading the first vehicle</span></div>
+      </div>
+      <div class="error-panel" id="errorPanel">
+        <h2>Could not reach the recommendation engine</h2>
+        <p id="errorMessage">Start the project API, then try again.</p>
+        <button class="retry" id="retryButton" type="button">Try again</button>
+      </div>
+      <div id="experience">
+        <div class="progress-strip">
+          <div class="metric"><span class="metric-label">Thumbs</span><span class="metric-value" id="thumbCount">0</span></div>
+          <div class="metric"><span class="metric-label">Evidence</span><span class="metric-value" id="evidenceValue">0%</span></div>
+          <div class="metric"><span class="metric-label">Exploration</span><span class="metric-value" id="explorationValue">—</span></div>
+        </div>
+
+        <div class="probe-content" id="probeContent">
+          <div class="vehicle-band">
+            <div class="eyebrow">Next active probe</div>
+            <div class="vehicle-name"><span class="make" id="make">—</span><span class="model" id="model">Loading vehicle</span></div>
+            <span class="vehicle-year" id="yearBackdrop" aria-hidden="true"></span>
+          </div>
+          <div class="vehicle-body">
+            <div class="detail-grid" id="details"></div>
+            <div class="reason" id="reason"><strong>Why this vehicle:</strong> waiting for the engine.</div>
+            <p class="vote-prompt">Would you choose this complete vehicle?</p>
+            <div class="vote-actions">
+              <button class="vote down" id="downButton" type="button" aria-label="Thumbs down">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v11M3.5 3h3.2c.7 0 1.3.6 1.3 1.3v8.4c0 .7-.6 1.3-1.3 1.3H3.5A1.5 1.5 0 0 1 2 12.5v-8A1.5 1.5 0 0 1 3.5 3Z"/><path d="M8 5.2c2-1.1 3.7-1.8 5.8-1.8h1.5c1.1 0 2 .8 2.2 1.8l1.3 6.2c.2 1.2-.7 2.3-1.9 2.3h-3.2l.7 3.6c.3 1.5-.8 2.9-2.3 2.9-.6 0-1.1-.3-1.4-.8L8 14"/></svg>
+                Not for me
+              </button>
+              <button class="vote up" id="upButton" type="button" aria-label="Thumbs up">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 21V10M3.5 21h3.2c.7 0 1.3-.6 1.3-1.3v-8.4c0-.7-.6-1.3-1.3-1.3H3.5A1.5 1.5 0 0 0 2 11.5v8A1.5 1.5 0 0 0 3.5 21Z"/><path d="M8 18.8c2 1.1 3.7 1.8 5.8 1.8h1.5c1.1 0 2-.8 2.2-1.8l1.3-6.2c.2-1.2-.7-2.3-1.9-2.3h-3.2l.7-3.6c.3-1.5-.8-2.9-2.3-2.9-.6 0-1.1.3-1.4.8L8 10"/></svg>
+                I’d consider it
+              </button>
+            </div>
+            <div class="keys"><kbd>←</kbd> down &nbsp;·&nbsp; <kbd>→</kbd> up</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side" aria-label="Session progression">
+      <section class="card side-card">
+        <div class="section-head"><h2>Best fit now</h2><span class="section-note">live top 5</span></div>
+        <div class="evidence-track" aria-hidden="true"><div class="evidence-fill" id="evidenceFill"></div></div>
+        <div class="evidence-copy"><span>cold start</span><span id="evidenceLabel">0% evidence</span></div>
+        <div class="recommendations" id="recommendations" style="margin-top:14px">
+          <div class="history-empty">Recommendations appear with the first vehicle.</div>
+        </div>
+      </section>
+
+      <section class="card side-card">
+        <div class="section-head"><h2>This session</h2><span class="section-note" id="historyCount">0 reactions</span></div>
+        <div class="history" id="history"><div class="history-empty">Your progression will appear here after the first thumb.</div></div>
+      </section>
+
+      <section class="card side-card">
+        <div class="section-head"><h2>Reading the signal</h2></div>
+        <p style="margin:0;color:var(--gray-500);font-size:12px">The left card is the engine’s most useful next question. “Best fit now” is its separate exploitation ranking. Watch that list reorganize as evidence accumulates.</p>
+      </section>
+    </aside>
+  </div>
+
+  <p class="footer-note">Reloading this page clears the active profile and creates a new evaluation session.</p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var state = {
+    sessionId: "",
+    current: null,
+    feedback: [],
+    recommendations: [],
+    busy: true
+  };
+
+  var el = {};
+  ["statusDot", "statusText", "sessionLabel", "loadingCover", "loadingTitle", "loadingDetail",
+   "errorPanel", "errorMessage", "experience", "probeContent", "thumbCount", "evidenceValue",
+   "explorationValue", "make", "model", "yearBackdrop", "details", "reason", "downButton",
+   "upButton", "recommendations", "evidenceFill", "evidenceLabel", "history", "historyCount",
+   "retryButton"].forEach(function (id) { el[id] = document.getElementById(id); });
+
+  function sessionId() {
+    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID().slice(0, 8);
+    return Math.random().toString(16).slice(2, 10);
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? "—" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+  }
+
+  function pretty(value) {
+    if (value == null || value === "") return "—";
+    return String(value).replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function percent(value, digits) {
+    if (value == null || !isFinite(value)) return "—";
+    return (value * 100).toFixed(digits == null ? 0 : digits) + "%";
+  }
+
+  async function jsonResponse(response) {
+    if (!response.ok) {
+      var body = await response.json().catch(function () { return {}; });
+      throw new Error(body.detail || ("Request failed: " + response.status));
+    }
+    return response.json();
+  }
+
+  function setBusy(busy, title, detail) {
+    state.busy = busy;
+    el.downButton.disabled = busy;
+    el.upButton.disabled = busy;
+    if (title) el.loadingTitle.textContent = title;
+    if (detail) el.loadingDetail.textContent = detail;
+    el.loadingCover.classList.toggle("hidden", !busy);
+  }
+
+  function detailsFor(vehicle) {
+    var mpgLabel = vehicle.electric_range > 0 ? "Combined MPGe" : "Combined MPG";
+    var engine = vehicle.cylinders ? vehicle.cylinders + " cyl" : "Electric";
+    if (vehicle.displacement) engine += " · " + Number(vehicle.displacement).toFixed(1) + " L";
+    return [
+      ["Class", vehicle.vehicle_class],
+      ["Fuel", vehicle.fuel_type],
+      ["Drive", pretty(vehicle.drive_family)],
+      ["Transmission", pretty(vehicle.transmission_family)],
+      [mpgLabel, vehicle.combined_mpg],
+      ["Powertrain", engine]
+    ];
+  }
+
+  function renderProbe(vehicle) {
+    state.current = vehicle;
+    el.probeContent.classList.add("changing");
+    window.setTimeout(function () {
+      el.make.textContent = vehicle.make;
+      el.model.textContent = vehicle.model;
+      el.yearBackdrop.textContent = vehicle.year;
+      el.details.innerHTML = detailsFor(vehicle).map(function (pair) {
+        return '<div class="detail"><span class="detail-label">' + escapeHtml(pair[0]) +
+          '</span><span class="detail-value" title="' + escapeHtml(pair[1]) + '">' + escapeHtml(pair[1]) + '</span></div>';
+      }).join("");
+      el.reason.innerHTML = "<strong>Why this vehicle:</strong> " + escapeHtml(vehicle.reason) + ".";
+      el.explorationValue.textContent = percent(vehicle.exploration_weight, 0);
+      el.probeContent.classList.remove("changing");
+    }, 150);
+  }
+
+  function renderEvidence(value) {
+    var bounded = Math.max(0, Math.min(1, Number(value) || 0));
+    el.evidenceValue.textContent = percent(bounded, 0);
+    el.evidenceFill.style.width = percent(bounded, 1);
+    el.evidenceLabel.textContent = percent(bounded, 0) + " evidence";
+  }
+
+  function renderRecommendations(items) {
+    var previous = new Set(state.recommendations.map(function (item) { return item.variant_id; }));
+    state.recommendations = items;
+    el.recommendations.innerHTML = items.map(function (item, index) {
+      var entered = previous.size && !previous.has(item.variant_id) ? " entered" : "";
+      return '<div class="rec' + entered + '" title="' + escapeHtml(item.reason) + '">' +
+        '<div class="rec-rank">' + (index + 1) + '</div>' +
+        '<div><div class="rec-title">' + escapeHtml(item.year + " " + item.make + " " + item.model) + '</div>' +
+        '<div class="rec-meta">' + escapeHtml(item.vehicle_class + " · " + pretty(item.drive_family)) + '</div></div>' +
+        '<div class="rec-score">' + percent(item.score, 3) + '</div></div>';
+    }).join("");
+    if (!items.length) el.recommendations.innerHTML = '<div class="history-empty">No unrated recommendations remain.</div>';
+  }
+
+  function renderHistory() {
+    el.historyCount.textContent = state.feedback.length + (state.feedback.length === 1 ? " reaction" : " reactions");
+    el.thumbCount.textContent = state.feedback.length;
+    if (!state.feedback.length) {
+      el.history.innerHTML = '<div class="history-empty">Your progression will appear here after the first thumb.</div>';
+      return;
+    }
+    el.history.innerHTML = state.feedback.slice().reverse().map(function (event) {
+      return '<div class="history-row"><span class="thumb-mark ' + (event.liked ? "up" : "") + '">' +
+        (event.liked ? "↑" : "↓") + '</span><div><div class="history-title">' +
+        escapeHtml(event.vehicle.year + " " + event.vehicle.make + " " + event.vehicle.model) +
+        '</div><div class="history-meta">thumb ' + event.number + ' · ' + (event.liked ? "consider" : "pass") +
+        '</div></div></div>';
+    }).join("");
+  }
+
+  async function loadSurface() {
+    var results = await Promise.all([
+      fetch("/probe").then(jsonResponse),
+      fetch("/recommendations?limit=5").then(jsonResponse)
+    ]);
+    renderProbe(results[0]);
+    renderRecommendations(results[1].recommendations);
+    renderEvidence(results[0].evidence_strength);
+  }
+
+  async function boot() {
+    state.sessionId = sessionId();
+    state.current = null;
+    state.feedback = [];
+    state.recommendations = [];
+    el.sessionLabel.textContent = "session " + state.sessionId;
+    el.errorPanel.classList.remove("on");
+    el.experience.style.display = "block";
+    renderHistory();
+    renderEvidence(0);
+    setBusy(true, "Creating a clean session", "Resetting feedback and loading the first vehicle");
+    try {
+      await fetch("/health").then(jsonResponse);
+      await fetch("/reset", { method: "POST" }).then(jsonResponse);
+      await loadSurface();
+      el.statusDot.classList.add("online");
+      el.statusText.textContent = "engine online";
+      setBusy(false);
+    } catch (error) {
+      setBusy(false);
+      el.statusDot.classList.remove("online");
+      el.statusText.textContent = "engine offline";
+      el.experience.style.display = "none";
+      el.errorPanel.classList.add("on");
+      el.errorMessage.textContent = error.message || "Start the project API, then try again.";
+    }
+  }
+
+  async function react(liked) {
+    if (state.busy || !state.current) return;
+    var rated = state.current;
+    setBusy(true, liked ? "Learning from that yes" : "Learning from that no", "Updating the posterior and choosing the next vehicle");
+    try {
+      var result = await fetch("/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ variant_id: rated.variant_id, liked: liked })
+      }).then(jsonResponse);
+      state.feedback.push({ number: result.feedback_count, liked: liked, vehicle: rated });
+      renderHistory();
+      renderEvidence(result.evidence_strength);
+      await loadSurface();
+      setBusy(false);
+    } catch (error) {
+      setBusy(false);
+      el.statusDot.classList.remove("online");
+      el.statusText.textContent = "request failed";
+      window.alert(error.message || "The feedback could not be recorded.");
+    }
+  }
+
+  el.downButton.addEventListener("click", function () { react(false); });
+  el.upButton.addEventListener("click", function () { react(true); });
+  el.retryButton.addEventListener("click", boot);
+  document.addEventListener("keydown", function (event) {
+    if (event.repeat || state.busy) return;
+    if (event.key === "ArrowLeft") react(false);
+    if (event.key === "ArrowRight") react(true);
+  });
+
+  window.addEventListener("load", boot);
+})();
+</script>
+</body>
+</html>

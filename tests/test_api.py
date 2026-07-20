@@ -340,5 +340,19 @@ def test_startup_pretrains_and_persists_a_model_when_absent(api_database_url, co
         assert reopened.get("/recommendations?limit=2").json() == body
 
 
+def test_vehicle_session_frontend_is_served_as_one_self_contained_html_file(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "Vehicle preference session" in html
+    assert 'fetch("/reset", { method: "POST" })' in html
+    assert 'fetch("/probe")' in html
+    assert 'fetch("/feedback"' in html
+    assert 'fetch("/recommendations?limit=5")' in html
+    assert "https://" not in html
+    assert "<link" not in html
+
+
 def test_no_profile_endpoint_is_exposed(client):
     assert client.get("/profile").status_code == 404

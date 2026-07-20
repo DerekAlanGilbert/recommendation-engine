@@ -15,9 +15,11 @@ every event. Every variant hypothesis is scored exactly in process memory.
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import psycopg
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, StrictBool, StrictStr
 
 from app import store
@@ -36,6 +38,7 @@ EVIDENCE_PRIOR = 5
 
 CONNECT_ATTEMPTS = 30
 CONNECT_DELAY_SECONDS = 1.0
+SESSION_HTML_PATH = Path(__file__).with_name("vehicle-session.html")
 
 
 class FeedbackRequest(BaseModel):
@@ -126,6 +129,10 @@ def create_app(database_url=None, connect_attempts=CONNECT_ATTEMPTS,
 
     app = FastAPI(title="Live Recommendation Engine", lifespan=lifespan)
     app.state.service = service
+
+    @app.get("/", include_in_schema=False)
+    def vehicle_session():
+        return FileResponse(SESSION_HTML_PATH, media_type="text/html")
 
     @app.post("/reset")
     def reset():
