@@ -19,6 +19,12 @@ from fastapi.testclient import TestClient
 from app import store
 from app.data import group_consumer_variants, group_families, import_source_rows
 from app.main import EVIDENCE_PRIOR, evidence_strength
+from app.methodology import (
+    METHODOLOGY_ID,
+    METHODOLOGY_NAME,
+    MODEL_ID,
+    PROBE_OBJECTIVE,
+)
 from app.main import create_app
 from app.model import build_variant_features, untrained_model
 from app.preference import (
@@ -124,7 +130,13 @@ def test_health_reports_catalog_model_and_database_readiness(client, features):
         "families": 4,
         "model_loaded": True,
         "feedback_count": 0,
+        "methodology_id": METHODOLOGY_ID,
+        "methodology_name": METHODOLOGY_NAME,
+        "model_id": MODEL_ID,
+        "probe_objective": PROBE_OBJECTIVE,
     }
+    # the one methodology is stated explicitly, not derivable from defaults
+    assert METHODOLOGY_ID == "targeted_learning_current_relationships"
 
 
 def test_health_feedback_and_reset_report_503_when_the_database_is_unavailable(client):
@@ -147,7 +159,7 @@ def test_startup_fails_after_bounded_retries_when_the_database_is_unreachable():
             pass
 
 
-def test_cold_start_probe_is_the_active_elicitation_choice(client, engine):
+def test_cold_start_probe_is_the_canonical_targeted_selection(client, engine):
     expected = select_probe(engine, posterior_from_feedback(engine, []))
     response = client.get("/probe")
     assert response.status_code == 200

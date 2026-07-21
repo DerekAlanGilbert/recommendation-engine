@@ -1,185 +1,98 @@
-# Live Recommendation Engine
+<div align="center">
 
-A proof of concept for thumbs-only Bayesian active preference elicitation over
-a real U.S. vehicle catalog. One shopper reacts to complete vehicle packages
-with thumbs-up/down — no text, no attribute checklists — and the system infers
-their latent ideal package, choosing each probe to learn efficiently.
+# Targeted Bayesian Active Preference Learning
+
+**A recommender that learns your broad taste from nothing but thumbs — each vehicle it shows you is chosen to reveal as much as possible about what you want.**
+
+Python 3.12 · PyTorch · FastAPI · PostgreSQL + pgvector · frozen EPA catalog, 6,606 vehicles, model years 2017–2026
+
+</div>
+
+---
+
+## Quick start
+
+```bash
+docker compose up -d db
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/hatch run serve
+open http://127.0.0.1:8000
+```
+
+The browser session shows one vehicle at a time with thumbs-up/down controls and a live top-three list. Other useful commands: `.venv/bin/hatch run test` (full suite), `test-nodb` (skips the Postgres suites), `verify` (compile + diff check + tests), and `benchmark` (the focused Precision@5 benchmark).
+
+## Implementation map
+
+| File | What it does |
+|---|---|
+| `app/model.py` | Neural content tower: EPA attributes → frozen 32-d vehicle embeddings |
+| `app/preference.py` | Bayesian ideal-point posterior, Targeted EIG probe selection, ranking |
+| `app/main.py` | FastAPI service: probe, feedback, recommendations, reset, health |
+| `app/vehicle-session.html` | The entire browser UI, one self-contained file |
+| `app/benchmark.py` | Deterministic Precision@5 benchmark against the exact live stack |
+
+## The question
+
+Most recommenders either make you fill out filters or need a long behavioral history. This project starts with neither: a shopper reacts to complete vehicle packages with a thumbs-up or thumbs-down, and nothing else. No attribute chips, no surveys, no "what did you dislike about it?"
+
+That signal is genuinely ambiguous. A thumbs-down on a loaded Tundra doesn't mean the shopper hates trucks, or 4WD, or Toyota — it means *this complete package is not my choice*. The interesting problem is extracting a preference from a stream of such low-bandwidth, package-level judgments without over-interpreting any single one.
+
+The goal is deliberately not to guess one exact hidden vehicle. It is to learn the **region** of the catalog the shopper prefers — trucks, electric cars, premium brands — and make the recommendation list consistently live there. Success is defined as Precision@5 ≥ 0.80: at least four of the top five recommendations fit the shopper's broad preference, where every thumb counts as one swipe.
 
 ## How it works
 
-- **Catalog** — a frozen snapshot of the official EPA/DOE FuelEconomy.gov
-  vehicle CSV (retrieved 2026-07-19, checksums in
-  `data/catalog_manifest.json`): 9,134 raw EPA configs → 6,606 consumer-facing
-  variants by `(year, make, model)` (the recommendation targets) → 2,138
-  model-year families by `(year, make, baseModel)` (diversity grouping). No
-  fabricated attributes; the EPA model string is the only trim identity.
-- **Similarity prior** — a small neural content tower encodes each variant's
-  structured EPA attributes into a frozen 32-d embedding; package similarity
-  blends embedding cosine with model-string token overlap.
-- **Inference** — an ideal-point model with a latent approval threshold:
-  `P(up | shown x, ideal t, θ) = σ(10·(sim(x,t) − θ))`, posterior computed
-  exactly over all 6,606 variants × a 15-level θ grid from the complete
-  feedback history. Marginalizing θ preserves ambiguity after rejections and
-  keeps a rejected near-sibling from crushing an endorsed package.
-- **Active probing** — `GET /probe` returns the package maximizing expected
-  information gain blended with exploitation, over a hierarchical candidate
-  pool (one representative per nameplate + posterior leaders), so elicitation
-  sweeps the catalog coarse-to-fine.
-- **Persistence** — PostgreSQL + pgvector; feedback is the only authoritative
-  mutable state, and a restart reconstructs identical probe and rankings.
-- **Browser session** — the FastAPI root serves one self-contained HTML page
-  for reacting to one complete vehicle at a time. It shows the active probe,
-  live top-three recommendations, evidence strength, and the current reaction
-  history without adding a frontend framework or external assets.
-
-## Browser interface
-
-Open `http://127.0.0.1:8000/` after starting the service. The page accepts only
-thumbs-up/down feedback, updates the probe and best-fit ranking immediately,
-and supports the left/right arrow keys. Every page load calls `POST /reset`
-before fetching the first probe, so a reload starts a clean evaluation session.
-
-The proof intentionally maintains one active profile. Opening or reloading the
-page in any tab therefore resets the same shared local evaluation state.
-
-## API
-
-| Method | Path | Behavior |
-|---|---|---|
-| GET | `/` | self-contained vehicle preference session |
-| POST | `/reset` | clear feedback, reproducible cold start |
-| GET | `/probe` | next package for feedback (+ information gain, approval, exploration weight) |
-| GET | `/recommendations?limit=N` | best-fit unrated variants by marginal posterior, family-capped |
-| POST | `/feedback` | `{variant_id, liked}` once per variant (404/409/422 errors) |
-| GET | `/health` | API, catalog counts, model, database readiness |
-
-## Run it
-
-```bash
-docker compose up -d db                      # pgvector PostgreSQL on :5433
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/hatch run serve                    # imports catalog + pretrains on first start
-open http://127.0.0.1:8000                   # interactive vehicle session
-curl -s localhost:8000/probe | python3 -m json.tool
+```mermaid
+flowchart LR
+    A["Frozen EPA catalog<br>9,134 configs → 6,606 variants"] --> B["Content tower<br>32-d embeddings"]
+    B --> C["Similarity map<br>embedding cosine + trim-token overlap"]
+    C --> D["Exact Bayesian posterior<br>ideal vehicle × pickiness"]
+    D --> E["Targeted EIG<br>picks the next probe"]
+    E --> F["Thumb up / down"]
+    F --> D
+    D --> G["Top-5 ranking<br>marginal posterior, family-capped"]
 ```
 
-Project maintenance goes through [Hatch](https://hatch.pypa.io) (pinned in
-`requirements-dev.txt`, so the bootstrap above installs it); its default
-environment reuses `./.venv`, and commands are written as `.venv/bin/hatch`
-so they work without activating the venv. `pyproject.toml` is the
-authoritative dependency source; `requirements.txt` (Docker image) and
-`requirements-dev.txt` (plain-pip bootstrap) are derived mirrors, and
-`tests/test_packaging.py` fails the suite if they drift. Working without
-hatch is fine — every command below is a thin wrapper over `python -m ...`.
+**1. Learn the catalog.** A small neural tower embeds each vehicle from real EPA attributes — make, vehicle class, fuel type, drivetrain, transmission, efficiency, cylinders, displacement, electric range, tailpipe CO2, model year — into 32 dimensions, pretrained on deterministic synthetic interactions with held-out rules excluded. Similarity blends embedding cosine with token overlap of the EPA model string (the only honest handle on trim identity like "Tundra 4WD PRO"). No MSRP, horsepower, or marketing data is fabricated.
 
-Or run both services in containers: `docker compose up` (interface and API on
-`:8000`).
-The current exact pairwise preference engine uses about **0.9 GiB** of steady
-container memory and peaks near **1.1 GiB** while building its similarity
-matrix, so allocate at least 2 GiB to Docker. No GPU is required. Compose
-binds the database and unauthenticated API to loopback only.
+**2. Represent uncertainty about the shopper.** The shopper is modeled as having one unknown ideal vehicle *t* and one unknown pickiness threshold *θ*. A thumb on shown vehicle *x* is a Bernoulli observation:
 
-This proof supports **one API process only**. The posterior is cached in that
-process and synchronized transactionally with PostgreSQL; do not add Uvicorn
-workers or replicas until database-revision refresh and cross-process locking
-are implemented.
-
-### Upgrading a v1 development database
-
-Normal startup fails closed when it detects the former family-level schema,
-because those feedback rows cannot be mapped safely to consumer variants. To
-explicitly discard that incompatible local state and create schema v2:
-
-```bash
-.venv/bin/python scripts/reset_v1_schema.py --confirm-destroy-feedback
+```text
+P(up | x, t, θ) = sigmoid(10 · (sim(x, t) − θ))
 ```
 
-## Tests
+where `sim(x, t)` is the blended similarity in [0, 1] and 10 is a fixed sharpness constant. The joint posterior over every vehicle × a discrete θ grid is computed exactly, in memory, from the complete feedback history — no sampling, no approximation. Because a rejection can be explained by either dissimilarity or high pickiness, one thumbs-down narrows the search without branding every attribute on that vehicle as disliked.
 
-Tests never call the network. Postgres suites create and drop isolated
-databases (`rec_test`, `rec_test_api`) and never touch development data.
+**3. Ask the most useful question.** The probe policy is Targeted Expected Information Gain — technically, targeted mutual-information active learning for a Bayesian ideal-point recommender. Each probe maximizes
 
-```bash
-.venv/bin/hatch run test             # full suite; needs the compose db running
-.venv/bin/hatch run test-nodb        # everything that runs without PostgreSQL
-.venv/bin/hatch run verify           # compilation + git diff --check + full suite
-.venv/bin/hatch run simulate         # deterministic offline proof report
+```text
+I(next thumb ; ideal vehicle)
 ```
 
-## Experiments
+with the threshold integrated out as a nuisance variable, blended toward exploitation as posterior entropy falls. Candidates come from a hierarchical pool (one representative per nameplate plus the current posterior leaders), so probing sweeps the catalog coarse-to-fine instead of drilling near-identical siblings.
 
-Every experiment run automatically writes raw results and charts under
-`artifacts/experiments/<experiment-id>/`, checked into the repository:
-`events.csv` (every per-loop row), `summary.json` + `summary.csv`
-(aggregates), and four charts (`progress.png`, `topk.png`,
-`information.png`, `tundra.png`). Charts are a pure function of the raw
-files (`--replot` regenerates them), and `--validate` checks a run's
-artifact set without recomputing anything.
+**4. Rank and repeat.** After each thumb the posterior is recomputed from scratch and unrated vehicles are ranked by their marginal probability of being the ideal. A per-family cap keeps one model-year family from flooding the visible list, while adjacent model years of the same vehicle remain valid when they offer meaningful alternatives. PostgreSQL holds the catalog, embeddings, and feedback; feedback is the sole mutable state, so the identical posterior is reconstructed after a restart.
 
-```bash
-.venv/bin/hatch run experiment           # full run: 4 policies × both cohorts (~9 min)
-.venv/bin/hatch run validate-experiment  # integrity-check the checked-in run below
-.venv/bin/python -m app.experiment --replot artifacts/experiments/<id>   # re-render charts
-```
+## Why the threshold is a nuisance variable
 
-The comparison covers the greedy baseline, passive Bayesian, the frozen
-joint-EIG active baseline, and the `targeted` experimental arm, on a frozen
-36-target held-out cohort (default persona, plus a labeled persona-robustness
-slice) and the 12-target development cohort (contaminated by constant
-selection; regression/sanity reporting only).
+Joint EIG — maximizing information about (ideal, threshold) together — can value a probe for learning how *picky* the shopper is even when it does not distinguish vehicles. Targeted EIG only counts bits that reduce uncertainty about the ideal vehicle itself, so probe value stays tied to *what the shopper wants* rather than how they grade. The threshold still does its job in the background: marginalizing it is what lets the model absorb a rejection near an endorsed vehicle as "close, but not quite good enough" instead of collapsing the whole neighborhood.
 
-### Measured result: targeted EIG is a no-go (run `targeted-eig-aec84a9237`)
+## What we learned along the way
 
-Replacing the probe objective I(response; T, Θ) with targeted
-I(response; T) — threshold integrated out as a nuisance — was measured on
-the frozen held-out cohort and **rejected**. Joint EIG remains the product
-and API default; `targeted` is retained only as a named comparison arm of
-`select_probe`/the experiment runner. Held-out cohort, default persona:
+Earlier iterations tried greedy ranking, passive Bayesian updates, joint EIG, diversity heuristics, approval-first probing, and a type-level content model. They were mostly useful for discovering what the objective should be: exact-vehicle retrieval rewards different behavior than broad preference matching. Greedy was fast on easy shoppers but had a long tail (15 swipes for the electric case, 10 for the sporty one); the type-first model never discovered the electric preference at all. Targeted EIG had the best balanced worst case, so it is the one methodology this repository keeps.
 
-| metric | joint EIG (default) | targeted EIG (arm) |
-|---|---|---|
-| median target rank @5 thumbs | **651** | 1,218 |
-| median target rank @15 thumbs | **795** | 1,436 |
-| surfaced (probe or top-10) @5 / @15 | **13.9% / 30.6%** | 5.6% / 16.7% |
-| top-10 @5 / @15 | 2.8% / 5.6% | 2.8% / 5.6% |
-| median first thumbs-up loop | >15 (censored) | >15 (censored) |
-| median cumulative variant bits @4 | 0.0113 | 0.0113 |
+## Benchmark
 
-Both robustness personas and the development cohort agree in direction; the
-development Tundra case is descriptive only (joint 159→21 over 15 loops,
-targeted stalls near rank 4,000 until loop 10). Full raw data and charts:
-`artifacts/experiments/targeted-eig-aec84a9237/`.
+The focused benchmark runs the exact live stack against five broad preference proxies defined over frozen EPA attributes, each starting from a cold posterior and thumbed deterministically by its predicate:
 
-## Measured development baseline (deterministic)
+| Case | Proxy definition |
+|---|---|
+| Passenger car | EPA car classes, excluding wagons and two-seaters |
+| Pickup truck | EPA pickup-truck classes |
+| Premium brand | make ∈ {BMW, Lexus, Mercedes-Benz, Cadillac, Audi, Acura} |
+| Electric passenger car | car proxy + electric range > 0 + no cylinders |
+| Performance SUV | SUV class + (≥6 cylinders or a performance trim token) |
 
-The offline simulator runs a hidden shopper (raw-attribute satisficing
-utility, independent of the inference likelihood, thumbs only) against three
-policies over a 12-target cohort spanning makes, classes, and powertrains.
-`SHARPNESS` and the threshold grid were hand-selected while inspecting this
-same development cohort, so these are transparent iteration measurements—not
-held-out evidence of generalization:
+All five cases reached stable ≥80% Precision@5 within six swipes and finished at 100%. Median first-80% was 2 swipes, median stable-80% was 3, and the worst stable case took 6. Run it yourself with `.venv/bin/hatch run benchmark`; artifacts (events, summary, chart) are content-addressed under `artifacts/benchmarks/`.
 
-- Active elicitation median target rank: **1,917 after 5 thumbs / 806 after
-  15**, versus greedy 2,274 / 2,152 and passive 3,592 / 2,398 (cold start
-  6,606).
-- The 2025 Toyota Tundra 4WD PRO case: rank 159 after 5 thumbs, 21 after 15,
-  4 after 25; first surfaced to the shopper at loop 23.
-- Top-1/3/10 retrieval after five thumbs is 0.00 for all policies: five
-  binary answers distinguish at most 2⁵ outcomes against 6,606 hypotheses.
-  Surfacing the exact target within five thumbs is the north-star metric for
-  iteration; `PLAN.md` documents the limitation and the planned levers
-  (cold-start prior, batch probes, likelihood calibration, probe lookahead).
-
-## Regenerate the snapshot
-
-Only needed to re-freeze from the source; tests and normal use read the
-frozen files.
-
-```bash
-.venv/bin/python scripts/import_epa.py                          # downloads from the EPA URL
-.venv/bin/python scripts/import_epa.py --source local_copy.csv  # or a verbatim local copy
-```
-
-The importer refuses to write anything unless the source yields exactly 9,134
-configs, 6,606 consumer variants, and 2,138 families.
+**What this evidence is and isn't.** These are synthetic regression proxies, not human validation. EPA data has no exterior color, price, horsepower, or reliable sedan body-style label, so the premium and performance cases are explicit proxies built from what the data honestly supports — each predicate and its caveat is recorded in the benchmark output. Catalog provenance, checksums, and counts live in `data/catalog_manifest.json`.

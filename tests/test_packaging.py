@@ -45,3 +45,11 @@ def test_dev_dependencies_mirror_requirements_dev_txt():
 def test_dev_requirements_include_runtime_requirements():
     text = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
     assert "-r requirements.txt" in text
+
+
+def test_hatch_scripts_expose_exactly_the_clean_command_surface():
+    """Generic plumbing plus the one focused benchmark; no per-experiment
+    commands for modules that no longer exist."""
+    scripts = _pyproject()["tool"]["hatch"]["envs"]["default"]["scripts"]
+    assert set(scripts) == {"test", "test-nodb", "verify", "serve", "benchmark"}
+    assert scripts["benchmark"] == "python -m app.benchmark {args}"

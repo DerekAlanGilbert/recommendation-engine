@@ -1,9 +1,11 @@
 """Single-profile FastAPI service: reset, probe, recommendations, feedback, health.
 
-Two distinct read surfaces serve the one active profile:
+Two distinct read surfaces serve the one active profile (Targeted Learning —
+Current Relationships, see `app.methodology`):
 
-- GET /probe: the next package to show for feedback — active preference
-  elicitation by expected information gain with a plausibility term.
+- GET /probe: the next package to show for feedback — Targeted Learning
+  active elicitation (`select_probe`: expected information gain about the
+  ideal variant alone, threshold as nuisance, with a plausibility term).
 - GET /recommendations: the current best-fit ranking — exploitation of the
   posterior over ideal-variant hypotheses, with family-aware diversity.
 
@@ -24,6 +26,12 @@ from pydantic import BaseModel, StrictBool, StrictStr
 
 from app import store
 from app.data import load_manifest, load_snapshot
+from app.methodology import (
+    METHODOLOGY_ID,
+    METHODOLOGY_NAME,
+    MODEL_ID,
+    PROBE_OBJECTIVE,
+)
 from app.model import pretrain
 from app.preference import (
     build_engine,
@@ -232,6 +240,10 @@ def create_app(database_url=None, connect_attempts=CONNECT_ATTEMPTS,
                 "families": service.family_count,
                 "model_loaded": service.model is not None,
                 "feedback_count": len(service.feedback),
+                "methodology_id": METHODOLOGY_ID,
+                "methodology_name": METHODOLOGY_NAME,
+                "model_id": MODEL_ID,
+                "probe_objective": PROBE_OBJECTIVE,
             }
 
     return app

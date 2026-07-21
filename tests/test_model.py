@@ -1,8 +1,9 @@
-"""Model tests: feature-building units plus pretraining/profile integration on the frozen catalog.
+"""Model tests: feature-building units plus tower quality on the frozen catalog.
 
-The content tower now encodes the 6,606 consumer-facing variants. The greedy
-profile-vector machinery (refit_profile/rank_items) stays as the simulation
-baseline and as the held-out learning-quality proof for the embeddings.
+The Current Relationships content tower encodes the 6,606 consumer-facing
+variants into frozen embeddings. Embedding quality is proven on held-out
+synthetic rules with a logistic evaluation probe defined in this test file —
+a measurement harness, not a recommendation policy.
 """
 
 import csv
@@ -21,15 +22,11 @@ from app.model import (
     NUMERIC_FEATURES,
     build_feature_space,
     build_variant_features,
-    cold_start_profile,
     drive_family,
     encode_features,
     generate_interactions,
     pretrain,
     pretrain_rules,
-    rank_items,
-    refit_profile,
-    score_items,
     transmission_family,
     untrained_model,
 )
@@ -155,11 +152,37 @@ def simulate_feedback(features, predicate, liked_count, disliked_count, seed):
     return [(variant_id, True) for variant_id in liked] + [(variant_id, False) for variant_id in disliked]
 
 
+def fit_evaluation_probe(model, feedback, steps=200, lr=0.5, l2=0.001):
+    """Logistic probe over the frozen embeddings — the held-out measurement
+    harness for embedding quality, not a recommendation policy. Full-batch
+    gradient descent; feedback is sorted so the fit is order-independent."""
+    events = sorted(feedback)
+    profile = torch.zeros(EMBEDDING_DIM)
+    rows = model.embeddings[[model.index[variant_id] for variant_id, _ in events]]
+    labels = torch.tensor([1.0 if liked else 0.0 for _, liked in events])
+    for _ in range(steps):
+        logits = rows @ profile + model.bias
+        gradient = rows.T @ (torch.sigmoid(logits) - labels) / len(events) + l2 * profile
+        profile = profile - lr * gradient
+    return profile
+
+
+def rank_by_probe(model, profile, exclude):
+    scores = torch.sigmoid(model.embeddings @ profile + model.bias)
+    ranking = [
+        (variant_id, float(scores[row]))
+        for row, variant_id in enumerate(model.variant_ids)
+        if variant_id not in exclude
+    ]
+    ranking.sort(key=lambda pair: (-pair[1], pair[0]))
+    return ranking
+
+
 def evaluate_heldout_rule(model, features, predicate, feedback):
     """Precision@10 and ranking AUC for rule positives over unrated variants."""
-    profile = refit_profile(model, feedback)
+    profile = fit_evaluation_probe(model, feedback)
     rated = {variant_id for variant_id, _ in feedback}
-    ranking = rank_items(model, profile, exclude=rated)
+    ranking = rank_by_probe(model, profile, exclude=rated)
     by_id = {f["variant_id"]: f for f in features}
     precision = sum(bool(predicate(by_id[variant_id])) for variant_id, _ in ranking[:10]) / 10
     positive_ranks = [r for r, (variant_id, _) in enumerate(ranking) if predicate(by_id[variant_id])]
@@ -235,60 +258,12 @@ def test_trained_beats_untrained_on_heldout_rules(features, trained, untrained):
     assert sum(untrained_precisions) / len(HELDOUT_RULES) < 0.7
 
 
-def test_feedback_moves_scores_toward_liked_attributes(features, trained):
-    electric = [f["variant_id"] for f in features if f["fuel_type"] == "Electricity"]
-    guzzlers = [
-        f["variant_id"]
-        for f in sorted(features, key=lambda f: -f["co2_tailpipe_gpm"])
-        if f["fuel_type"] != "Electricity"
-    ]
-    feedback = [(variant_id, True) for variant_id in electric[:5]]
-    feedback += [(variant_id, False) for variant_id in guzzlers[:5]]
-    cold_scores = score_items(trained, cold_start_profile())
-    warm_scores = score_items(trained, refit_profile(trained, feedback))
-    rows = {variant_id: row for row, variant_id in enumerate(trained.variant_ids)}
-    unrated_electric = [rows[variant_id] for variant_id in electric[5:]]
-    unrated_guzzlers = [rows[variant_id] for variant_id in guzzlers[5:105]]
-    assert warm_scores[unrated_electric].mean() > cold_scores[unrated_electric].mean()
-    assert warm_scores[unrated_guzzlers].mean() < cold_scores[unrated_guzzlers].mean()
-
-
-def test_rank_items_never_repeats_rated_items(features, trained):
-    predicate = dict(HELDOUT_RULES)["likes efficient small SUVs"]
-    feedback = simulate_feedback(features, predicate, 15, 15, seed=99)
-    rated = {variant_id for variant_id, _ in feedback}
-    profile = refit_profile(trained, feedback)
-    ranking = rank_items(trained, profile, exclude=rated)
-    ranked_ids = [variant_id for variant_id, _ in ranking]
-    assert rated.isdisjoint(ranked_ids)
-    assert len(ranking) == EXPECTED_CONSUMER_VARIANTS - len(rated)
-    assert len(set(ranked_ids)) == len(ranked_ids)
-    scores = [score for _, score in ranking]
-    assert scores == sorted(scores, reverse=True)
-    assert rank_items(trained, profile, exclude=rated) == ranking
-    assert rank_items(trained, profile, exclude=rated, limit=10) == ranking[:10]
-
-
-def test_reset_restores_cold_start_ranking(features, trained):
-    cold_ranking = rank_items(trained, cold_start_profile(), limit=10)
-    predicate = dict(HELDOUT_RULES)["likes premium six-cylinder sedans"]
-    feedback = simulate_feedback(features, predicate, 10, 10, seed=7)
-    warm_ranking = rank_items(trained, refit_profile(trained, feedback), limit=10)
-    assert warm_ranking != cold_ranking
-    reset_profile = refit_profile(trained, [])
-    assert torch.equal(reset_profile, cold_start_profile())
-    assert rank_items(trained, reset_profile, limit=10) == cold_ranking
-
-
-def test_refit_is_deterministic_order_independent_and_fast(features, trained):
+def test_evaluation_probe_is_deterministic_and_order_independent(features, trained):
     predicate = dict(HELDOUT_RULES)["likes recent AWD family cars"]
     feedback = simulate_feedback(features, predicate, 15, 15, seed=3)
-    first = refit_profile(trained, feedback)
-    second = refit_profile(trained, list(reversed(feedback)))
+    first = fit_evaluation_probe(trained, feedback)
+    second = fit_evaluation_probe(trained, list(reversed(feedback)))
     assert torch.equal(first, second)
-    started = time.perf_counter()
-    profile = refit_profile(trained, feedback)
-    ranking = rank_items(trained, profile, exclude={variant_id for variant_id, _ in feedback})
-    elapsed = time.perf_counter() - started
+    ranking = rank_by_probe(trained, first, exclude={variant_id for variant_id, _ in feedback})
     assert len(ranking) == EXPECTED_CONSUMER_VARIANTS - len(feedback)
-    assert elapsed < 5.0
+    assert len({variant_id for variant_id, _ in ranking}) == len(ranking)

@@ -36,15 +36,13 @@ dependencies = [
 
 [tool.hatch.envs.default.scripts]
 test = "pytest {args:-q}"
-# Everything that runs without the compose PostgreSQL database (includes the
-# slow simulation suite; the Postgres and API suites are the only exclusions).
+# Everything that runs without the compose PostgreSQL database (the Postgres
+# and API suites are the only exclusions).
 test-nodb = "pytest -q --ignore=tests/test_postgres.py --ignore=tests/test_api.py {args}"
 verify = [
     "python -m compileall -q app tests scripts",
     "git diff --check",
     "pytest {args:-q}",
 ]
-simulate = "python -m app.simulate {args}"
-experiment = "python -m app.experiment {args}"
+benchmark = "python -m app.benchmark {args}"
 serve = "uvicorn app.main:app --port 8000 {args}"
-validate-experiment = "python -m app.experiment --validate {args:artifacts/experiments/targeted-eig-aec84a9237}"

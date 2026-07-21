@@ -1,10 +1,12 @@
-"""Neural content tower over consumer variants, plus the greedy profile baseline.
+"""Current Relationships content tower over consumer variants.
 
 The tower encodes each of the 6,606 consumer-facing variants into a frozen
-32-dimensional embedding from structured EPA attributes. The embeddings serve
-as the catalog similarity prior for the Bayesian preference engine, and the
-greedy profile-vector machinery (refit_profile/rank_items) remains as the
-simulation baseline and the held-out learning-quality proof.
+32-dimensional embedding from structured EPA attributes; the embeddings are
+the catalog similarity prior for the Bayesian preference engine. Pretraining
+uses deterministic synthetic single-attribute rules over real catalog
+attributes, with held-out combination rules structurally excluded so
+embedding quality can be proven on interactions the training never saw
+(see tests/test_model.py).
 """
 
 import random
@@ -292,42 +294,3 @@ def pretrain(features, seed=0, epochs=500, lr=0.02, per_rule=120):
     with torch.no_grad():
         embeddings = tower(categorical, numeric)
     return _freeze_model(features, embeddings, bias.item())
-
-
-def cold_start_profile():
-    return torch.zeros(EMBEDDING_DIM)
-
-
-def refit_profile(model, feedback, steps=200, lr=0.5, l2=0.001):
-    """Refit the greedy baseline profile from zero over the full feedback history.
-
-    Full-batch gradient descent on frozen embeddings; feedback is sorted by variant
-    so the result is independent of event order.
-    """
-    events = sorted(feedback)
-    profile = cold_start_profile()
-    if not events:
-        return profile
-    rows = model.embeddings[[model.index[variant_id] for variant_id, _ in events]]
-    labels = torch.tensor([1.0 if liked else 0.0 for _, liked in events])
-    for _ in range(steps):
-        logits = rows @ profile + model.bias
-        gradient = rows.T @ (torch.sigmoid(logits) - labels) / len(events) + l2 * profile
-        profile = profile - lr * gradient
-    return profile
-
-
-def score_items(model, profile):
-    return torch.sigmoid(model.embeddings @ profile + model.bias)
-
-
-def rank_items(model, profile, exclude=frozenset(), limit=None):
-    """Score every variant exactly, drop rated ones, and sort deterministically."""
-    scores = score_items(model, profile)
-    ranking = [
-        (variant_id, float(scores[row]))
-        for row, variant_id in enumerate(model.variant_ids)
-        if variant_id not in exclude
-    ]
-    ranking.sort(key=lambda pair: (-pair[1], pair[0]))
-    return ranking if limit is None else ranking[:limit]

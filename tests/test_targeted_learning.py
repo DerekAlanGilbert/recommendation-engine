@@ -1,19 +1,19 @@
 """Targeted expected information gain: bits about the ideal variant alone.
 
-The joint objective I(response; T, Θ) rewards a probe for anything it teaches,
-including bits about the nuisance threshold Θ. The targeted objective
-I(response; T) treats Θ as a nuisance parameter and integrates it out:
+The probe objective is I(response; T): the mutual information between one
+binary thumb and the ideal-variant hypothesis T, with the approval threshold
+Θ integrated out per target as a nuisance parameter:
 
     p_t(x)   = Σ_θ π(t, θ) · l(x, t, θ) / m(t)      (m(t) = Σ_θ π(t, θ))
     p̄(x)    = Σ_t m(t) · p_t(x)
     IG_T(x)  = H_b(p̄(x)) − Σ_t m(t) · H_b(p_t(x))
 
-By the chain rule I(response; T, Θ) = I(response; T) + I(response; Θ | T),
-so the targeted gain can never exceed the joint gain, and is strictly below
-it whenever a response teaches threshold but not target identity.
+Bits that would only teach the shopper's pickiness threshold do not count.
+`select_probe` has exactly one acquisition behavior — this one.
 """
 
 import csv
+import inspect
 import math
 from pathlib import Path
 
@@ -25,7 +25,6 @@ from app.model import build_variant_features, untrained_model
 from app.preference import (
     SHARPNESS,
     build_engine,
-    joint_information_gain,
     posterior_from_feedback,
     select_probe,
     targeted_information_gain,
@@ -80,7 +79,7 @@ def test_targeted_gain_matches_independent_tiny_example(engine):
         assert float(gain[i]) >= 0.0
 
 
-def test_targeted_gain_never_exceeds_joint_gain(engine):
+def test_targeted_gain_is_finite_and_nonnegative_across_histories(engine):
     rows = list(range(len(engine.variant_ids)))
     histories = (
         [],
@@ -91,60 +90,37 @@ def test_targeted_gain_never_exceeds_joint_gain(engine):
     )
     for history in histories:
         posterior = posterior_from_feedback(engine, history)
-        targeted = targeted_information_gain(engine, posterior, rows)
-        joint = joint_information_gain(engine, posterior, rows)
-        assert not torch.isnan(targeted).any()
-        assert (targeted <= joint + 1e-4).all(), history
+        gain = targeted_information_gain(engine, posterior, rows)
+        assert not torch.isnan(gain).any(), history
+        assert (gain >= 0.0).all(), history
 
 
 def test_targeted_gain_is_zero_when_a_response_teaches_only_threshold(engine):
-    """Identity known, threshold unknown: the joint objective still values a
-    probe (it would learn pickiness); the targeted objective must not."""
+    """Identity known, threshold unknown: no probe carries target information,
+    so the acquisition must not spend a thumb learning only pickiness."""
     k, n = len(engine.thetas), len(engine.variant_ids)
     posterior = torch.zeros((k, n), dtype=torch.float64)
     posterior[:, engine.index[LE17]] = 1.0 / k  # T certain, Θ uniform
-    rows = list(range(n))
-    targeted = targeted_information_gain(engine, posterior, rows)
-    joint = joint_information_gain(engine, posterior, rows)
-    assert not torch.isnan(targeted).any()  # zero-mass targets stay safe
-    assert float(targeted.abs().max()) == pytest.approx(0.0, abs=1e-5)
-    # Probing the known ideal itself would still teach threshold: strict gap.
-    assert float(joint[engine.index[LE17]]) > 0.01
+    gain = targeted_information_gain(engine, posterior, list(range(n)))
+    assert not torch.isnan(gain).any()  # zero-mass targets stay safe
+    assert float(gain.abs().max()) == pytest.approx(0.0, abs=1e-5)
 
 
-def test_select_probe_targeted_is_deterministic_and_excludes_rated(engine):
-    probe = select_probe(engine, posterior_from_feedback(engine, []), objective="targeted")
-    again = select_probe(engine, posterior_from_feedback(engine, []), objective="targeted")
+def test_select_probe_has_no_objective_selector():
+    """One methodology: probe acquisition is targeted information gain only."""
+    assert "objective" not in inspect.signature(select_probe).parameters
+
+
+def test_select_probe_is_deterministic_and_excludes_rated(engine):
+    probe = select_probe(engine, posterior_from_feedback(engine, []))
+    again = select_probe(engine, posterior_from_feedback(engine, []))
     assert probe == again
     assert probe["expected_information_gain"] >= 0.0
     assert 0.0 <= probe["expected_approval"] <= 1.0
     feedback = [(probe["variant_id"], False)]
-    following = select_probe(
-        engine, posterior_from_feedback(engine, feedback), feedback, objective="targeted"
-    )
+    following = select_probe(engine, posterior_from_feedback(engine, feedback), feedback)
     assert following["variant_id"] != probe["variant_id"]
     everything = [(variant_id, False) for variant_id in engine.variant_ids]
     assert select_probe(
-        engine, posterior_from_feedback(engine, everything), everything, objective="targeted"
+        engine, posterior_from_feedback(engine, everything), everything
     ) is None
-
-
-def test_select_probe_rejects_unknown_objective(engine):
-    with pytest.raises(ValueError):
-        select_probe(engine, posterior_from_feedback(engine, []), objective="oracle")
-
-
-def test_select_probe_defaults_to_the_frozen_joint_objective(engine):
-    """The measured no-go decision: joint EIG stays the product/API policy.
-
-    `app.main` calls select_probe without an objective, so pinning the default
-    parameter and its behavior pins the API probe surface. Targeted EIG exists
-    only as the explicitly named experimental comparison arm."""
-    import inspect
-
-    assert inspect.signature(select_probe).parameters["objective"].default == "joint"
-    for history in ([], [(LE17, True)], [(LE17, True), (XSE17, False)]):
-        posterior = posterior_from_feedback(engine, history)
-        assert select_probe(engine, posterior, history) == select_probe(
-            engine, posterior, history, objective="joint"
-        )
