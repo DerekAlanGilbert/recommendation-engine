@@ -1,6 +1,6 @@
 services:
   db:
-    image: pgvector/pgvector:pg17
+    image: postgres:17
     environment:
       POSTGRES_USER: rec
       POSTGRES_PASSWORD: rec
@@ -21,6 +21,10 @@ services:
       DATABASE_URL: postgresql://rec:rec@db:5432/rec
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      # Persists the trained model artifact across container restarts, so only
+      # the first start (or a catalog change) pretrains.
+      - models:/srv/app/models
     depends_on:
       db:
         condition: service_healthy
@@ -34,3 +38,4 @@ services:
 
 volumes:
   pgdata:
+  models:

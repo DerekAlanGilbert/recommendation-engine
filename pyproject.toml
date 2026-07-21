@@ -9,14 +9,13 @@ build-backend = "hatchling.build"
 [project]
 name = "recommendation-engine"
 version = "0.1.0"
-description = "Thumbs-only Bayesian active preference elicitation over a real U.S. vehicle catalog"
+description = "Bayesian active preference learning from binary feedback over a real U.S. vehicle catalog"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "torch==2.13.0",
     "numpy==2.5.1",
     "psycopg[binary]==3.3.4",
-    "pgvector==0.5.0",
     "fastapi==0.139.2",
     "uvicorn==0.51.0",
 ]

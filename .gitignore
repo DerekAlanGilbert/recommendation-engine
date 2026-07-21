@@ -2,3 +2,6 @@
 __pycache__/
 .pytest_cache/
 artifacts/
+# Runtime model artifacts; the models/ directory itself stays tracked.
+models/*
+!models/.gitkeep

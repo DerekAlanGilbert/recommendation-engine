@@ -1,10 +1,12 @@
 """Postgres store tests: fixture-driven behavior units plus frozen-snapshot round-trip integration.
 
-Schema v2 persists the three-level catalog: raw EPA configs, consumer-facing
-variants (the recommendation targets), and model-year families, plus variant
-embeddings, model metadata, and chronologically ordered variant feedback.
+Schema v3 persists the three-level catalog: raw EPA configs, consumer-facing
+variants (the recommendation targets), and model-year families, plus catalog
+provenance and chronologically ordered variant feedback. Model data (embeddings
+and bias) lives only in the models/ file artifact, never in PostgreSQL; a v2
+database is migrated in place without touching catalog or feedback.
 
-These tests require the local pgvector database from compose.yaml:
+These tests require the local database from compose.yaml:
 `docker compose up -d`. The suite creates and removes a dedicated test
 database so development data is untouched.
 """
@@ -48,18 +50,17 @@ from app.store import (
     load_families,
     load_feedback,
     load_meta,
-    load_model,
     load_variants,
-    save_model,
 )
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "epa_sample.csv"
 
 TABLES = {
     "consumer_variants", "epa_configs", "feedback",
-    "model_meta", "variant_embeddings", "vehicle_families",
+    "model_meta", "vehicle_families",
 }
 V1_TABLES = ("feedback", "item_embeddings", "vehicle_variants", "vehicle_items", "model_meta")
+V2_MODEL_TABLES = ("variant_embeddings",)
 
 
 def read_fixture_configs():
@@ -123,6 +124,7 @@ def conn(isolated_test_database):
     with psycopg.connect(database_url(), autocommit=True, connect_timeout=5) as admin:
         admin.execute("DROP TABLE IF EXISTS " + ", ".join(sorted(TABLES)) + " CASCADE")
         admin.execute("DROP TABLE IF EXISTS " + ", ".join(V1_TABLES) + " CASCADE")
+        admin.execute("DROP TABLE IF EXISTS " + ", ".join(V2_MODEL_TABLES) + " CASCADE")
     connection = connect()
     yield connection
     connection.close()
@@ -131,13 +133,56 @@ def conn(isolated_test_database):
 # Fixture-driven behavior tests
 
 
-def test_connect_applies_idempotent_schema_with_no_profile_table(conn):
+def model_meta_columns(connection):
+    rows = connection.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'model_meta'"
+    )
+    return {name for (name,) in rows}
+
+
+def test_connect_applies_idempotent_schema_with_no_model_data(conn):
     assert public_tables(conn) == TABLES
+    assert model_meta_columns(conn) == {"singleton", "snapshot_sha256"}
+    assert conn.execute(
+        "SELECT count(*) FROM pg_extension WHERE extname = 'vector'"
+    ).fetchone()[0] == 0
     again = connect()
     try:
         assert public_tables(again) == TABLES
     finally:
         again.close()
+
+
+def test_connect_migrates_a_v2_model_store_preserving_catalog_and_feedback(conn):
+    """v2 kept embeddings and bias in PostgreSQL. Connecting migrates that
+    database in place: only the model store is dropped; catalog rows and
+    recorded feedback survive untouched."""
+    configs = read_fixture_configs()
+    import_catalog(conn, configs, fixture_manifest(configs))
+    add_feedback(conn, "2017|Toyota|Camry LE", True)
+    add_feedback(conn, "2017|Toyota|Camry XSE", False)
+    conn.execute("ALTER TABLE model_meta ADD COLUMN bias double precision")
+    conn.execute("UPDATE model_meta SET bias = -0.25")
+    conn.execute(
+        "CREATE TABLE variant_embeddings (variant_id text PRIMARY KEY "
+        "REFERENCES consumer_variants (variant_id), embedding text NOT NULL)"
+    )
+    conn.execute("INSERT INTO variant_embeddings VALUES ('2017|Toyota|Camry LE', 'v2')")
+
+    migrated = connect()
+    try:
+        assert public_tables(migrated) == TABLES
+        assert model_meta_columns(migrated) == {"singleton", "snapshot_sha256"}
+        assert load_meta(migrated) == {"snapshot_sha256": "f" * 64}
+        assert load_configs(migrated) == configs
+        assert load_variants(migrated) == expected_variant_rows(configs)
+        assert load_feedback(migrated) == [
+            ("2017|Toyota|Camry LE", True),
+            ("2017|Toyota|Camry XSE", False),
+        ]
+    finally:
+        migrated.close()
 
 
 def test_connect_refuses_legacy_schema_until_explicit_reset(conn):
@@ -183,7 +228,7 @@ def test_fixture_catalog_round_trip(conn):
     bolt = by_id["2026|Chevrolet|Bolt EUV"]
     assert bolt["cylinders"] is None
     assert bolt["displacement"] is None
-    assert load_meta(conn) == {"snapshot_sha256": "f" * 64, "bias": None}
+    assert load_meta(conn) == {"snapshot_sha256": "f" * 64}
 
 
 def test_import_is_transactional_when_a_config_fails(conn):
@@ -245,22 +290,13 @@ def test_feedback_is_chronological_and_recorded_once_per_variant(conn):
     assert load_feedback(conn) == [("2017|Toyota|Camry LE", False)]
 
 
-def test_model_round_trip_preserves_embeddings_and_bias(conn):
-    configs = read_fixture_configs()
-    model = untrained_model(build_variant_features(configs), seed=0)._replace(bias=-0.25)
-    with pytest.raises(ValueError):
-        save_model(conn, model)  # the catalog must be imported first
-    import_catalog(conn, configs, fixture_manifest(configs))
-    assert load_model(conn) is None
-    save_model(conn, model)
-    loaded = load_model(conn)
-    assert loaded.variant_ids == model.variant_ids
-    assert loaded.index == model.index
-    assert loaded.bias == model.bias
-    assert torch.equal(loaded.embeddings, model.embeddings)
-    assert load_meta(conn)["bias"] == model.bias
-    save_model(conn, model)  # re-saving replaces embeddings rather than duplicating them
-    assert torch.equal(load_model(conn).embeddings, model.embeddings)
+def test_store_exposes_no_model_persistence(conn):
+    """Model data never enters PostgreSQL; the store has no save/load for it."""
+    from app import store
+
+    assert not hasattr(store, "save_model")
+    assert not hasattr(store, "load_model")
+    assert "variant_embeddings" not in public_tables(conn)
 
 
 # Frozen-snapshot integration tests
@@ -294,14 +330,16 @@ def test_frozen_snapshot_round_trip_records_manifest_checksum(conn, snapshot, ma
     assert len(variants) == EXPECTED_CONSUMER_VARIANTS
     assert variants == expected_variant_rows(snapshot)
     assert len(load_families(conn)) == EXPECTED_FAMILIES
-    assert load_meta(conn) == {"snapshot_sha256": manifest["snapshot_sha256"], "bias": None}
+    assert load_meta(conn) == {"snapshot_sha256": manifest["snapshot_sha256"]}
 
 
 def test_restart_reconstructs_posterior_probe_and_ranking_from_feedback(
     conn, snapshot, manifest, features, catalog_model
 ):
+    """Feedback is the sole mutable state: with the same deterministic model
+    (from the file artifact, not the database), replaying persisted feedback
+    reproduces the identical posterior, ranking, and probe after a restart."""
     import_catalog(conn, snapshot, manifest)
-    save_model(conn, catalog_model)
     engine = build_engine(catalog_model, features)
     events = [
         ("2024|Toyota|RAV4 AWD", False),
@@ -320,13 +358,9 @@ def test_restart_reconstructs_posterior_probe_and_ranking_from_feedback(
 
     reopened = connect()
     try:
-        restored_model = load_model(reopened)
-        assert restored_model.variant_ids == catalog_model.variant_ids
-        assert restored_model.bias == catalog_model.bias
-        assert torch.equal(restored_model.embeddings, catalog_model.embeddings)
         restored_events = load_feedback(reopened)
         assert restored_events == events
-        restored_engine = build_engine(restored_model, load_variants(reopened))
+        restored_engine = build_engine(catalog_model, load_variants(reopened))
         restored_posterior = posterior_from_feedback(restored_engine, restored_events)
         assert torch.equal(restored_posterior, posterior)
         assert rank_recommendations(restored_engine, restored_posterior,

@@ -5,9 +5,11 @@ FROM python:3.12-slim
 WORKDIR /srv/app
 
 COPY requirements.txt .
+# models/ backs a writable named volume for the runtime .npz model artifact.
 RUN pip install --no-cache-dir torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \
-    && useradd --create-home --uid 10001 appuser
+    && useradd --create-home --uid 10001 appuser \
+    && mkdir -p models && chown appuser:appuser models
 
 COPY --chown=appuser:appuser app ./app
 COPY --chown=appuser:appuser db ./db

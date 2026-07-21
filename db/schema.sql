@@ -1,12 +1,13 @@
--- Idempotent plain-SQL schema (v2) for the live recommendation engine.
+-- Idempotent plain-SQL schema (v3) for the live recommendation engine.
 -- Persists the three-level catalog: raw EPA configs, consumer-facing
 -- variants (the recommendation targets), and model-year families.
 -- Feedback is the authoritative profile state; no posterior is persisted.
-
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Model data (embeddings and bias) lives only in the models/ file artifact.
 
 -- Legacy v1 detection and explicit reset live in app/store.py. Normal startup
--- fails closed rather than deleting family-level feedback implicitly.
+-- fails closed rather than deleting family-level feedback implicitly. The v2
+-- model store (variant_embeddings, model_meta.bias) is dropped in place by
+-- app/store.py, preserving catalog and feedback.
 
 -- (year, make, baseModel) model-year families derived from the raw grouping.
 CREATE TABLE IF NOT EXISTS vehicle_families (
@@ -65,16 +66,11 @@ CREATE TABLE IF NOT EXISTS epa_configs (
     co2_tailpipe_gpm double precision NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS variant_embeddings (
-    variant_id text PRIMARY KEY REFERENCES consumer_variants (variant_id),
-    embedding vector(32) NOT NULL
-);
-
--- Singleton: catalog provenance plus model bias (NULL until a model is saved).
+-- Singleton: catalog provenance only. The model artifact is validated
+-- against snapshot_sha256 at startup.
 CREATE TABLE IF NOT EXISTS model_meta (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
-    snapshot_sha256 text NOT NULL,
-    bias double precision
+    snapshot_sha256 text NOT NULL
 );
 
 -- One-time feedback per consumer variant; the complete authoritative history.

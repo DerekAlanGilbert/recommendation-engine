@@ -4,7 +4,7 @@
 
 **How much can a recommender learn from a small amount of feedback? This one treats every vehicle it shows as a question.**
 
-Python 3.12 · PyTorch · FastAPI · PostgreSQL + pgvector · 6,606 real EPA vehicles from model years 2017–2026
+Python 3.12 · PyTorch · FastAPI · PostgreSQL · 6,606 real EPA vehicles from model years 2017–2026
 
 </div>
 
@@ -37,6 +37,7 @@ list.
 | File | Purpose |
 |---|---|
 | `app/model.py` | Learns relationships between vehicles from EPA attributes |
+| `app/artifact.py` | Persists the trained model as a validated `models/*.npz` file |
 | `app/preference.py` | Updates the shopper model, chooses the next vehicle, and ranks results |
 | `app/main.py` | Serves the FastAPI application |
 | `app/vehicle-session.html` | Provides the complete browser interface |
@@ -104,7 +105,9 @@ The approval bar still helps explain the answer, but it does not drive the quest
 
 After each response, unrated vehicles are ranked by how well they fit the updated shopper model. A family cap keeps one model-year family from taking over the list. Adjacent model years can still appear when they are meaningful alternatives.
 
-PostgreSQL stores the catalog, embeddings, and feedback. Feedback is the only changing preference state, so the same shopper model can be rebuilt after a restart.
+PostgreSQL stores the catalog and feedback. Feedback is the only changing preference state, so the same shopper model can be rebuilt after a restart.
+
+The trained model itself lives in a versioned `models/recommender.npz` file, never in the database. Each startup validates that artifact against the catalog checksum and variant identity; if it is missing, corrupt, the wrong version, or built from a different catalog, the API retrains during startup and atomically replaces the file. In Docker the artifact persists in a named volume, so only the first start pretrains.
 
 ## Why this method
 

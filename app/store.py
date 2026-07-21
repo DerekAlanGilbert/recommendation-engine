@@ -3,15 +3,14 @@
 Feedback is the authoritative preference state; the posterior is never
 persisted and is always replayed in memory from the complete history. Events
 retain a stable audit order even though the current posterior is order-independent.
+Model data (embeddings and bias) lives only in the models/ file artifact
+(see app.artifact), never in PostgreSQL.
 """
 
 import os
 from pathlib import Path
 
-import numpy as np
 import psycopg
-import torch
-from pgvector.psycopg import register_vector
 
 from app.data import (
     SNAPSHOT_COLUMNS,
@@ -20,7 +19,7 @@ from app.data import (
     group_consumer_variants,
     group_families,
 )
-from app.model import RecommenderModel, build_variant_features
+from app.model import build_variant_features
 
 DEFAULT_DATABASE_URL = "postgresql://rec:rec@localhost:5433/rec"
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
@@ -72,12 +71,23 @@ def _drop_legacy_schema(conn):
         conn.execute(f"DROP TABLE IF EXISTS {tables} CASCADE")
 
 
+def _drop_v2_model_persistence(conn):
+    """Schema v3 keeps model data out of PostgreSQL. Migrate a v2 database in
+    place by dropping only its model store; catalog and feedback are untouched."""
+    with conn.transaction():
+        conn.execute("DROP TABLE IF EXISTS variant_embeddings")
+        conn.execute("ALTER TABLE IF EXISTS model_meta DROP COLUMN IF EXISTS bias")
+        conn.execute("DROP EXTENSION IF EXISTS vector")
+
+
 def connect(url=None, allow_legacy_reset=False):
-    """Open a connection and apply schema v2.
+    """Open a connection and apply schema v3.
 
     A v1 schema contains family-level feedback that cannot be mapped safely to
     consumer variants. Normal startup therefore fails closed. Only the explicit
     reset utility passes ``allow_legacy_reset=True`` to destroy that state.
+    A v2 schema differs only in its model store and is migrated in place
+    without touching catalog or feedback.
     """
     conn = psycopg.connect(url or database_url(), autocommit=True)
     if _has_legacy_schema(conn):
@@ -89,14 +99,14 @@ def connect(url=None, allow_legacy_reset=False):
                 "before starting the API"
             )
         _drop_legacy_schema(conn)
+    _drop_v2_model_persistence(conn)
     conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
-    register_vector(conn)
     return conn
 
 
 def load_meta(conn):
-    row = conn.execute("SELECT snapshot_sha256, bias FROM model_meta").fetchone()
-    return None if row is None else {"snapshot_sha256": row[0], "bias": row[1]}
+    row = conn.execute("SELECT snapshot_sha256 FROM model_meta").fetchone()
+    return None if row is None else {"snapshot_sha256": row[0]}
 
 
 def _variant_rows(configs):
@@ -189,39 +199,8 @@ def load_variants(conn):
     return variants
 
 
-def save_model(conn, model):
-    """Persist frozen variant embeddings and the model bias, replacing any prior model."""
-    with conn.transaction():
-        updated = conn.execute("UPDATE model_meta SET bias = %s", (model.bias,))
-        if updated.rowcount != 1:
-            raise ValueError("import the catalog before saving a model")
-        conn.execute("DELETE FROM variant_embeddings")
-        with conn.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO variant_embeddings (variant_id, embedding) VALUES (%s, %s)",
-                [
-                    (variant_id, model.embeddings[row].numpy())
-                    for row, variant_id in enumerate(model.variant_ids)
-                ],
-            )
-
-
-def load_model(conn):
-    """Reconstruct the frozen model from PostgreSQL, or return None before pretraining."""
-    meta = load_meta(conn)
-    if meta is None or meta["bias"] is None:
-        return None
-    variant_ids = tuple(variant["variant_id"] for variant in load_variants(conn))
-    vectors = dict(conn.execute("SELECT variant_id, embedding FROM variant_embeddings").fetchall())
-    embeddings = torch.from_numpy(
-        np.stack([vectors[variant_id].to_numpy() for variant_id in variant_ids])
-    )
-    index = {variant_id: row for row, variant_id in enumerate(variant_ids)}
-    return RecommenderModel(variant_ids, embeddings, meta["bias"], index)
-
-
 def add_feedback(conn, variant_id, liked):
-    """Record one thumbs-up/down per consumer variant; reject duplicates and unknowns."""
+    """Record one binary response per consumer variant; reject duplicates and unknowns."""
     try:
         conn.execute(
             "INSERT INTO feedback (variant_id, liked) VALUES (%s, %s)", (variant_id, liked)

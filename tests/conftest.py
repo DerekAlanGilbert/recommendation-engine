@@ -1,6 +1,6 @@
 """Shared fixtures: an isolated PostgreSQL database for API tests.
 
-Requires the local pgvector database from compose.yaml: `docker compose up -d`.
+Requires the local PostgreSQL database from compose.yaml: `docker compose up -d`.
 API tests get a dedicated `rec_test_api` database, created and dropped per
 session, so development data and the store-test database are untouched.
 """

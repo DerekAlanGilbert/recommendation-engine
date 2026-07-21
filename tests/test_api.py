@@ -4,11 +4,12 @@ The API separates two concepts: GET /probe returns the next package for
 active preference elicitation, and GET /recommendations returns the current
 best-fit exploitation ranking. Expected probes, posteriors, and rankings are
 recomputed independently with app.preference, so the API is held to exact
-in-memory inference. These tests require the local pgvector database from
+in-memory inference. These tests require the local PostgreSQL database from
 compose.yaml: `docker compose up -d`.
 """
 
 import csv
+import hashlib
 from pathlib import Path
 
 import psycopg
@@ -17,6 +18,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from app import store
+from app.artifact import load_valid_artifact, save_artifact
 from app.data import group_consumer_variants, group_families, import_source_rows
 from app.main import EVIDENCE_PRIOR, evidence_strength
 from app.methodology import (
@@ -85,25 +87,38 @@ def drop_tables(url):
 
 
 @pytest.fixture()
-def database(api_database_url, configs, manifest, model):
-    """A fresh schema seeded with the fixture catalog and a deterministic frozen model."""
+def database(api_database_url, configs, manifest):
+    """A fresh schema seeded with the fixture catalog; model data never enters the database."""
     drop_tables(api_database_url)
     conn = store.connect(api_database_url)
     try:
         store.import_catalog(conn, configs, manifest)
-        store.save_model(conn, model)
     finally:
         conn.close()
     return api_database_url
 
 
-def make_client(url):
-    return TestClient(create_app(database_url=url, connect_attempts=1))
+@pytest.fixture()
+def artifact_path(tmp_path):
+    return tmp_path / "models" / "recommender.npz"
 
 
 @pytest.fixture()
-def client(database):
-    with make_client(database) as started:
+def seeded_artifact(artifact_path, model, manifest):
+    """The deterministic frozen model, persisted as a valid file artifact."""
+    save_artifact(model, manifest["snapshot_sha256"], artifact_path)
+    return artifact_path
+
+
+def make_client(url, artifact_path):
+    return TestClient(
+        create_app(database_url=url, connect_attempts=1, artifact_path=artifact_path)
+    )
+
+
+@pytest.fixture()
+def client(database, seeded_artifact):
+    with make_client(database, seeded_artifact) as started:
         yield started
 
 
@@ -227,7 +242,7 @@ def test_feedback_immediately_updates_probe_and_recommendations(client, engine, 
 
 
 def test_feedback_rolls_back_if_posterior_derivation_fails(client, monkeypatch):
-    """A failed in-memory update must not leave a committed, unretryable thumb."""
+    """A failed in-memory update must not leave committed, unretryable feedback."""
     target = "2017|Toyota|Camry LE"
     service = client.app.state.service
     original_feedback = list(service.feedback)
@@ -310,19 +325,21 @@ def test_reset_restores_the_reproducible_cold_start(client, features):
     assert client.post("/feedback", json={"variant_id": first, "liked": True}).status_code == 200
 
 
-def test_restart_reconstructs_the_posterior_from_ordered_feedback(database, features):
+def test_restart_reconstructs_the_posterior_from_ordered_feedback(
+    database, seeded_artifact, features
+):
     # The stable event order is persisted for audit/replay; the current static
     # likelihood produces the same posterior regardless of that order.
     ids = sorted(f["variant_id"] for f in features)
     events = [(ids[2], False), (ids[0], True), (ids[4], False)]
-    with make_client(database) as first:
+    with make_client(database, seeded_artifact) as first:
         for variant_id, liked in events:
             assert first.post(
                 "/feedback", json={"variant_id": variant_id, "liked": liked}
             ).status_code == 200
         before_recommendations = first.get(f"/recommendations?limit={len(ids)}").json()
         before_probe = first.get("/probe").json()
-    with make_client(database) as reopened:
+    with make_client(database, seeded_artifact) as reopened:
         assert reopened.get("/health").json()["feedback_count"] == len(events)
         assert reopened.get(f"/recommendations?limit={len(ids)}").json() == before_recommendations
         assert reopened.get("/probe").json() == before_probe
@@ -331,25 +348,85 @@ def test_restart_reconstructs_the_posterior_from_ordered_feedback(database, feat
         ).status_code == 409
 
 
-def test_startup_pretrains_and_persists_a_model_when_absent(api_database_url, configs, manifest):
-    drop_tables(api_database_url)
-    conn = store.connect(api_database_url)
-    try:
-        store.import_catalog(conn, configs, manifest)
-        assert store.load_model(conn) is None
-    finally:
-        conn.close()
-    with make_client(api_database_url) as started:
+def expected_ids(features):
+    return tuple(f["variant_id"] for f in features)
+
+
+def artifact_checksum(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def test_first_startup_trains_and_writes_the_artifact(database, artifact_path, manifest, features):
+    assert not artifact_path.exists()
+    with make_client(database, artifact_path) as started:
+        assert started.get("/health").json()["model_loaded"] is True
         body = started.get("/recommendations?limit=2").json()
         assert len(body["recommendations"]) == 2
-    conn = store.connect(api_database_url)
+    trained = load_valid_artifact(
+        artifact_path, manifest["snapshot_sha256"], expected_ids(features)
+    )
+    assert trained is not None
+
+
+def test_second_startup_loads_the_artifact_and_never_pretrains(
+    database, artifact_path, monkeypatch
+):
+    with make_client(database, artifact_path) as first:
+        body = first.get("/recommendations?limit=2").json()
+    checksum = artifact_checksum(artifact_path)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("pretrain must not run when a valid artifact exists")
+
+    monkeypatch.setattr("app.main.pretrain", forbidden)
+    with make_client(database, artifact_path) as reopened:
+        assert reopened.get("/health").json()["model_loaded"] is True
+        assert reopened.get("/recommendations?limit=2").json() == body
+    assert artifact_checksum(artifact_path) == checksum
+
+
+@pytest.mark.parametrize("corruption", ["stale_catalog", "corrupt_bytes"])
+def test_invalid_artifact_is_retrained_and_replaced_preserving_feedback(
+    corruption, database, artifact_path, model, manifest, features
+):
+    target = sorted(f["variant_id"] for f in features)[0]
+    conn = store.connect(database)
     try:
-        assert store.load_model(conn) is not None
+        store.add_feedback(conn, target, True)
     finally:
         conn.close()
-    # a second startup reuses the persisted model and serves identical responses
-    with make_client(api_database_url) as reopened:
-        assert reopened.get("/recommendations?limit=2").json() == body
+    if corruption == "stale_catalog":
+        save_artifact(model, "0" * 64, artifact_path)
+    else:
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_bytes(b"garbage, not an npz archive")
+    with make_client(database, artifact_path) as started:
+        health = started.get("/health").json()
+        assert health["model_loaded"] is True
+        assert health["feedback_count"] == 1
+    replaced = load_valid_artifact(
+        artifact_path, manifest["snapshot_sha256"], expected_ids(features)
+    )
+    assert replaced is not None
+
+
+def test_startup_stores_no_model_data_in_postgres(client, database):
+    with psycopg.connect(database, autocommit=True, connect_timeout=5) as raw:
+        tables = {
+            name
+            for (name,) in raw.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+            )
+        }
+        assert "variant_embeddings" not in tables
+        columns = {
+            name
+            for (name,) in raw.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'model_meta'"
+            )
+        }
+        assert columns == {"singleton", "snapshot_sha256"}
 
 
 def test_vehicle_session_frontend_is_served_as_one_self_contained_html_file(client):

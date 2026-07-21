@@ -12,6 +12,8 @@ Current Relationships, see `app.methodology`):
 Feedback in PostgreSQL is the authoritative preference state: the in-memory
 posterior is replayed from the complete persisted history at startup and after
 every event. Every variant hypothesis is scored exactly in process memory.
+The frozen model is served from the validated models/ file artifact; startup
+retrains and atomically replaces it whenever validation fails (see app.artifact).
 """
 
 import threading
@@ -25,6 +27,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, StrictBool, StrictStr
 
 from app import store
+from app.artifact import artifact_path as default_artifact_path
+from app.artifact import load_valid_artifact, save_artifact
 from app.data import load_manifest, load_snapshot
 from app.methodology import (
     METHODOLOGY_ID,
@@ -81,10 +85,11 @@ def similarity_reason(engine, variants, feedback, variant_id):
 class Service:
     """Serving state for the one active profile; `lock` serializes feedback/replay/persist."""
 
-    def __init__(self, database_url, connect_attempts, connect_delay):
+    def __init__(self, database_url, connect_attempts, connect_delay, artifact_path):
         self.database_url = database_url
         self.connect_attempts = connect_attempts
         self.connect_delay = connect_delay
+        self.artifact_path = artifact_path
         self.lock = threading.Lock()
         self.conn = None
         self.model = None
@@ -97,13 +102,18 @@ class Service:
     def start(self):
         self.conn = self._connect_with_retries()
         try:
-            if store.load_meta(self.conn) is None:
+            meta = store.load_meta(self.conn)
+            if meta is None:
                 store.import_catalog(self.conn, load_snapshot(), load_manifest())
+                meta = store.load_meta(self.conn)
             variant_rows = store.load_variants(self.conn)
-            self.model = store.load_model(self.conn)
+            variant_ids = tuple(variant["variant_id"] for variant in variant_rows)
+            self.model = load_valid_artifact(
+                self.artifact_path, meta["snapshot_sha256"], variant_ids
+            )
             if self.model is None:
                 self.model = pretrain(variant_rows, seed=0)
-                store.save_model(self.conn, self.model)
+                save_artifact(self.model, meta["snapshot_sha256"], self.artifact_path)
             self.engine = build_engine(self.model, variant_rows)
             self.variants = {variant["variant_id"]: variant for variant in variant_rows}
             self.family_count = len(store.load_families(self.conn))
@@ -124,8 +134,11 @@ class Service:
 
 
 def create_app(database_url=None, connect_attempts=CONNECT_ATTEMPTS,
-               connect_delay=CONNECT_DELAY_SECONDS):
-    service = Service(database_url, connect_attempts, connect_delay)
+               connect_delay=CONNECT_DELAY_SECONDS, artifact_path=None):
+    service = Service(
+        database_url, connect_attempts, connect_delay,
+        Path(artifact_path) if artifact_path is not None else default_artifact_path(),
+    )
 
     @asynccontextmanager
     async def lifespan(app):
