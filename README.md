@@ -2,7 +2,7 @@
 
 # Targeted Bayesian Active Preference Learning
 
-**How much can a recommender learn from a few thumbs? This one treats every vehicle it shows as a question.**
+**How much can a recommender learn from a small amount of feedback? This one treats every vehicle it shows as a question.**
 
 Python 3.12 · PyTorch · FastAPI · PostgreSQL + pgvector · 6,606 real EPA vehicles from model years 2017–2026
 
@@ -20,7 +20,7 @@ python3 -m venv .venv
 open http://127.0.0.1:8000
 ```
 
-The browser shows one vehicle at a time, thumbs controls, and a live top-three recommendation list. Use `.venv/bin/hatch run test` for tests, `test-nodb` without PostgreSQL, `verify` for the full check, and `benchmark` to measure Precision@5.
+The browser shows one vehicle at a time, simple feedback controls, and a live top-three recommendation list. Use `.venv/bin/hatch run test` for tests, `test-nodb` without PostgreSQL, `verify` for the full check, and `benchmark` to measure Precision@5.
 
 ## Implementation map
 
@@ -34,13 +34,13 @@ The browser shows one vehicle at a time, thumbs controls, and a live top-three r
 
 ## The question
 
-Most recommenders need filters or a long history. This project starts with neither. The shopper sees one complete vehicle and gives one bit of feedback: thumbs-up or thumbs-down.
+Most recommenders need filters or a long history. This project starts with neither. The shopper sees one complete vehicle and gives one bit of feedback: positive or negative.
 
-That tiny signal hides a lot. A thumbs-down on a loaded Tundra does not tell us whether the shopper dislikes trucks, Toyota, 4WD, the trim, or simply this combination. It only tells us that this package did not clear their bar.
+That tiny signal hides a lot. Negative feedback on a loaded Tundra does not tell us whether the shopper dislikes trucks, Toyota, 4WD, the trim, or simply this combination. It only tells us that this package did not clear their bar.
 
 A useful recommender should learn from that uncertainty without pretending the answer said more than it did. It should also choose the next vehicle carefully. Every new vehicle is both a possible recommendation and a question about the rest of the catalog.
 
-The goal is to learn the part of the catalog the shopper prefers, then keep the recommendation list there. Success means at least four of the top five results match that broad preference. Every thumb counts as one swipe.
+The goal is to learn the part of the catalog the shopper prefers, then keep the recommendation list there. Success means at least four of the top five results match that broad preference. Each response counts as one feedback round.
 
 ## How it works
 
@@ -50,7 +50,7 @@ flowchart LR
     B --> C["Similarity map"]
     C --> D["Shopper posterior<br>ideal vehicle × approval bar"]
     D --> E["Targeted EIG<br>chooses the next vehicle"]
-    E --> F["Thumb up or down"]
+    E --> F["Positive or negative feedback"]
     F --> D
     D --> G["Updated top five"]
 ```
@@ -68,31 +68,31 @@ The shopper model tracks two unknowns:
 - the vehicle that best represents what the shopper wants, written as *t*
 - the shopper's approval bar, written as *θ*
 
-For a shown vehicle *x*, the chance of a thumbs-up is:
+For a shown vehicle *x*, the chance of positive feedback is:
 
 ```text
-P(up | x, t, θ) = sigmoid(10 · (similarity(x, t) − θ))
+P(positive feedback | x, t, θ) = sigmoid(10 · (similarity(x, t) − θ))
 ```
 
-A no can mean the vehicle is wrong, or it can mean the shopper has a high bar. The model keeps both explanations alive. After each thumb, it recalculates the exact probability of every possible ideal vehicle and approval bar from the full feedback history.
+A negative response can mean the vehicle is wrong, or it can mean the shopper has a high bar. The model keeps both explanations alive. After each response, it recalculates the exact probability of every possible ideal vehicle and approval bar from the full feedback history.
 
 ### 3. Ask the question that teaches the most
 
-The next vehicle is not chosen only because it is likely to get a thumbs-up. It is chosen because either answer should clarify what belongs near the top.
+The next vehicle is not chosen only because it is likely to receive positive feedback. It is chosen because either response should clarify what belongs near the top.
 
 Targeted Expected Information Gain, or Targeted EIG, scores each possible question by:
 
 ```text
-I(next thumb ; ideal vehicle)
+I(next feedback ; ideal vehicle)
 ```
 
-In plain language: how much will the next answer reduce uncertainty about what the shopper wants?
+In plain language: how much will the next feedback reduce uncertainty about what the shopper wants?
 
 The approval bar still helps explain the answer, but it does not drive the question. The math integrates it out when measuring information gain. The formal name for this method is targeted mutual-information active learning for a Bayesian ideal-point recommender.
 
 ### 4. Rank, learn, and repeat
 
-After each thumb, unrated vehicles are ranked by how well they fit the updated shopper model. A family cap keeps one model-year family from taking over the list. Adjacent model years can still appear when they are meaningful alternatives.
+After each response, unrated vehicles are ranked by how well they fit the updated shopper model. A family cap keeps one model-year family from taking over the list. Adjacent model years can still appear when they are meaningful alternatives.
 
 PostgreSQL stores the catalog, embeddings, and feedback. Feedback is the only changing preference state, so the same shopper model can be rebuilt after a restart.
 
@@ -102,7 +102,7 @@ The fastest method was not the most dependable one.
 
 Earlier versions tried greedy ranking, passive Bayesian updates, joint information gain, diversity rules, approval-first probing, and a type-focused vehicle model. Those experiments revealed that finding one exact hidden car is a different goal from learning a broad preference.
 
-Greedy learning moved quickly for easy shoppers, but needed 15 swipes for the electric case and 10 for the sporty case. The type-focused model never found the electric preference in the benchmark. Targeted EIG had the best worst-case behavior, so the repository now focuses on that one method.
+Greedy learning moved quickly for easy shoppers, but needed 15 feedback rounds for the electric case and 10 for the sporty case. The type-focused model never found the electric preference in the benchmark. Targeted EIG had the best worst-case behavior, so the repository now focuses on that one method.
 
 ## What the benchmark found
 
@@ -116,13 +116,13 @@ The benchmark starts cold and simulates five broad preferences using only attrib
 | Electric passenger car | passenger car with electric range and no cylinders |
 | Performance SUV | SUV with at least six cylinders or a performance model token |
 
-All five reached stable 80% Precision@5 within six swipes and finished at 100%:
+All five reached stable 80% Precision@5 within six feedback rounds and finished at 100%:
 
-- median first success: **2 swipes**
-- median stable success: **3 swipes**
-- slowest stable success: **6 swipes**
+- median first success: **2 feedback rounds**
+- median stable success: **3 feedback rounds**
+- slowest stable success: **6 feedback rounds**
 
-Run it with `.venv/bin/hatch run benchmark`. Each run records the probes, thumbs, top-five matches, summary, and chart under `artifacts/benchmarks/`.
+Run it with `.venv/bin/hatch run benchmark`. Each run records the probes, feedback, top-five matches, summary, and chart under `artifacts/benchmarks/`.
 
 ### What this result does not prove
 
