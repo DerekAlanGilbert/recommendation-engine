@@ -47,6 +47,14 @@ def test_dev_requirements_include_runtime_requirements():
     assert "-r requirements.txt" in text
 
 
+def test_uv_dev_group_mirrors_dev_tooling_and_has_a_lockfile():
+    """`uv sync` must install the same pinned development tools as the legacy
+    plain-pip bootstrap, and a lockfile must make that setup reproducible."""
+    dev_group = _pyproject()["dependency-groups"]["dev"]
+    assert sorted(dev_group) == _requirement_lines("requirements-dev.txt")
+    assert (ROOT / "uv.lock").is_file()
+
+
 def test_hatch_scripts_expose_exactly_the_clean_command_surface():
     """Generic plumbing plus the one focused benchmark; no per-experiment
     commands for modules that no longer exist."""

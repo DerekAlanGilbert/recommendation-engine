@@ -24,8 +24,18 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
-# The default env reuses ./.venv so hatch, the plain-pip bootstrap, and the
-# test suite all share one verified environment.
+# UV is the setup entry point. `uv sync` installs the application and the
+# complete pinned development toolchain into ./.venv from uv.lock.
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+    "matplotlib==3.11.1",
+    "hatch==1.17.1",
+]
+
+# The default env reuses ./.venv so UV, Hatch, and the test suite share one
+# verified environment.
 [tool.hatch.envs.default]
 path = ".venv"
 dependencies = [

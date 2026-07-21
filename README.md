@@ -12,15 +12,25 @@ Python 3.12 · PyTorch · FastAPI · PostgreSQL + pgvector · 6,606 real EPA veh
 
 ## Quick start
 
+Requires [Docker](https://docs.docker.com/get-docker/) and
+[uv](https://docs.astral.sh/uv/getting-started/installation/).
+
 ```bash
-docker compose up -d db
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/hatch run serve
-open http://127.0.0.1:8000
+uv sync                     # install the locked environment
+docker compose up -d db     # start PostgreSQL
+uv run hatch run serve      # start the API and browser app
 ```
 
-The browser shows one vehicle at a time, simple feedback controls, and a live top-three recommendation list. Use `.venv/bin/hatch run test` for tests, `test-nodb` without PostgreSQL, `verify` for the full check, and `benchmark` to measure Precision@5.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The browser shows one
+vehicle at a time, simple feedback controls, and a live top-three recommendation
+list.
+
+| Command | Purpose |
+|---|---|
+| `uv run hatch run test` | Run the full test suite |
+| `uv run hatch run test-nodb` | Test without PostgreSQL |
+| `uv run hatch run verify` | Compile, check the diff, and run every test |
+| `uv run hatch run benchmark` | Measure Precision@5 |
 
 ## Implementation map
 
@@ -122,7 +132,7 @@ All five reached stable 80% Precision@5 within six feedback rounds and finished 
 - median stable success: **3 feedback rounds**
 - slowest stable success: **6 feedback rounds**
 
-Run it with `.venv/bin/hatch run benchmark`. Each run records the probes, feedback, top-five matches, summary, and chart under `artifacts/benchmarks/`.
+Run it with `uv run hatch run benchmark`. Each run records the probes, feedback, top-five matches, summary, and chart under `artifacts/benchmarks/`.
 
 ### What this result does not prove
 
